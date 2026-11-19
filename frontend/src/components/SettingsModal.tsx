@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Copy, FileSpreadsheet, Plug, RefreshCw, X, XCircle } from "lucide-react";
+import { Bell, CheckCircle2, Copy, FileSpreadsheet, Plug, RefreshCw, Send, X, XCircle } from "lucide-react";
 import {
+  fetchDiscordConfig,
   fetchHealth,
   fetchSheetsConfig,
   getBridgeConfig,
   saveBridgeConfig,
+  saveDiscordConfig,
   saveSheetsConfig,
   syncAllSheets,
+  testDiscordWebhook,
   testSheetsConnection,
 } from "../services/api";
 
@@ -52,12 +55,23 @@ function doPost(e) {
 
 export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
   const initial = getBridgeConfig();
-  const [tab, setTab] = useState<"bridge" | "sheets">("bridge");
+  const [tab, setTab] = useState<"bridge" | "discord" | "sheets">("discord");
 
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
   const [apiKey, setApiKey] = useState(initial.apiKey);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const [discordEnabled, setDiscordEnabled] = useState(false);
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState("");
+  const [discordPublicUrl, setDiscordPublicUrl] = useState(
+    initial.baseUrl || "https://mod-brokers-invite-thus.trycloudflare.com"
+  );
+  const [notifyProposals, setNotifyProposals] = useState(true);
+  const [notifyAutopilot, setNotifyAutopilot] = useState(true);
+  const [notifyPosMgr, setNotifyPosMgr] = useState(true);
+  const [discordBusy, setDiscordBusy] = useState(false);
+  const [discordMsg, setDiscordMsg] = useState<{ ok: boolean; message: string } | null>(null);
 
   const [sheetsEnabled, setSheetsEnabled] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -73,7 +87,19 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
         setWebhookUrl(cfg.webhook_url || "");
       })
       .catch(() => {});
-  }, [open]);
+    fetchDiscordConfig()
+      .then((cfg) => {
+        setDiscordEnabled(Boolean(cfg.enabled));
+        setDiscordWebhookUrl(cfg.webhook_url || "");
+        setDiscordPublicUrl(
+          cfg.public_base_url || initial.baseUrl || "https://mod-brokers-invite-thus.trycloudflare.com"
+        );
+        setNotifyProposals(cfg.notify_proposals ?? true);
+        setNotifyAutopilot(cfg.notify_autopilot ?? true);
+        setNotifyPosMgr(cfg.notify_position_manager ?? true);
+      })
+      .catch(() => {});
+  }, [open, initial.baseUrl]);
 
   if (!open) return null;
 
@@ -153,11 +179,58 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
     window.setTimeout(() => setCopiedScript(false), 2000);
   };
 
+  const handleSaveAndTestDiscord = async (runTest: boolean) => {
+    setDiscordBusy(true);
+    setDiscordMsg(null);
+    try {
+      const cleanWebhook = discordWebhookUrl.trim();
+      const cleanPublic = (discordPublicUrl.trim() || baseUrl.trim() || "https://mod-brokers-invite-thus.trycloudflare.com").replace(/\/+$/, "");
+      const autoEnable = runTest && Boolean(cleanWebhook) ? true : discordEnabled;
+      await saveDiscordConfig({
+        enabled: autoEnable,
+        webhook_url: cleanWebhook,
+        public_base_url: cleanPublic,
+        notify_proposals: notifyProposals,
+        notify_autopilot: notifyAutopilot,
+        notify_position_manager: notifyPosMgr,
+      });
+      setDiscordEnabled(autoEnable);
+      if (runTest) {
+        const res = await testDiscordWebhook({
+          webhook_url: cleanWebhook,
+          public_base_url: cleanPublic,
+        });
+        setDiscordMsg({ ok: true, message: res.message || "ส่งข้อความทดสอบเข้า Discord สำเร็จ!" });
+      } else {
+        setDiscordMsg({ ok: true, message: "บันทึกการตั้งค่า Discord แจ้งเตือนแล้ว" });
+      }
+    } catch (err) {
+      setDiscordMsg({
+        ok: false,
+        message: err instanceof Error ? err.message : "ส่งข้อความเข้า Discord ไม่สำเร็จ",
+      });
+    } finally {
+      setDiscordBusy(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
       <div className="w-full max-w-xl rounded-md border border-[#3c3c3c] bg-[#252526] shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#2b2b2b] px-5 py-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setTab("discord")}
+              className={`flex items-center gap-1.5 border-b-2 pb-1 text-xs font-semibold ${
+                tab === "discord"
+                  ? "border-[#007acc] text-white"
+                  : "border-transparent text-[#9d9d9d] hover:text-[#e1e1e1]"
+              }`}
+            >
+              <Bell className="h-3.5 w-3.5 text-[#c586c0]" />
+              Discord 1-Click Notify
+            </button>
             <button
               type="button"
               onClick={() => setTab("bridge")}
@@ -180,7 +253,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
               }`}
             >
               <FileSpreadsheet className="h-3.5 w-3.5 text-[#3fb950]" />
-              Google Sheets 24/7 Sync
+              Google Sheets 24/7
             </button>
           </div>
           <button
@@ -192,7 +265,123 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
           </button>
         </div>
 
-        {tab === "bridge" ? (
+        {tab === "discord" ? (
+          <div className="p-5 space-y-3.5">
+            <label className="flex cursor-pointer items-center justify-between rounded border border-[#2b2b2b] bg-[#1e1e1e] px-3 py-2 text-xs">
+              <span className="font-medium text-[#e1e1e1]">
+                เปิดแจ้งเตือนเข้า Discord พร้อมลิงก์กดยืนยันยิงออเดอร์ (1-Click Confirm)
+              </span>
+              <input
+                type="checkbox"
+                checked={discordEnabled}
+                onChange={(e) => setDiscordEnabled(e.target.checked)}
+                className="h-4 w-4 accent-[#007acc]"
+              />
+            </label>
+
+            <div>
+              <label className="block text-xs font-medium text-[#cccccc]">
+                Discord Webhook URL
+              </label>
+              <input
+                type="text"
+                value={discordWebhookUrl}
+                onChange={(e) => setDiscordWebhookUrl(e.target.value)}
+                placeholder="https://discord.com/api/webhooks/123456789/abcdef..."
+                className="font-mono-num mt-1.5 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#e1e1e1] placeholder-[#6e6e6e] focus:border-[#007fd4] focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[#cccccc]">
+                Public Bridge URL สำหรับปุ่มกดยืนยันจากมือถือ (Cloudflare Tunnel)
+              </label>
+              <input
+                type="text"
+                value={discordPublicUrl}
+                onChange={(e) => setDiscordPublicUrl(e.target.value)}
+                placeholder="https://mod-brokers-invite-thus.trycloudflare.com"
+                className="font-mono-num mt-1.5 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#e1e1e1] placeholder-[#6e6e6e] focus:border-[#007fd4] focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs text-[#cccccc]">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyProposals}
+                  onChange={(e) => setNotifyProposals(e.target.checked)}
+                  className="accent-[#007acc]"
+                />
+                <span>แจ้งเตือนเมื่อเจอสัญญาณผ่าน 9 ด่าน (≥75%) พร้อมลิงก์กด Confirm / Reject</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyAutopilot}
+                  onChange={(e) => setNotifyAutopilot(e.target.checked)}
+                  className="accent-[#007acc]"
+                />
+                <span>แจ้งเตือนเมื่อ 🤖 Auto-Pilot Demo ยิงออเดอร์อัตโนมัติ (≥80%)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyPosMgr}
+                  onChange={(e) => setNotifyPosMgr(e.target.checked)}
+                  className="accent-[#007acc]"
+                />
+                <span>แจ้งเตือนเมื่อ 🛡️ Smart Position Manager เลื่อน SL บังทุน / แบ่งปิดกำไร</span>
+              </label>
+            </div>
+
+            <div className="rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d] space-y-1">
+              <div className="font-semibold text-[#c586c0]">วิธีเอา Discord Webhook URL ใน 15 วินาที:</div>
+              <ol className="list-decimal pl-4 space-y-0.5">
+                <li>เปิดห้อง Discord ของมึง → กดไอคอนฟันเฟือง <strong>Edit Channel (แก้ไขช่อง)</strong></li>
+                <li>เลือกเมนู <strong>Integrations → Webhooks → New Webhook → Copy Webhook URL</strong></li>
+                <li>เอามาวางในช่องด้านบน แล้วกดปุ่ม <strong>Test Discord Ping</strong> ได้เลย!</li>
+              </ol>
+            </div>
+
+            {discordMsg && (
+              <div
+                className={`flex items-start gap-2 rounded border p-3 text-xs break-words ${
+                  discordMsg.ok
+                    ? "border-[#3fb950]/40 bg-[#1e3a29]/40 text-[#3fb950]"
+                    : "border-[#f14c4c]/40 bg-[#5a1d1d]/40 text-[#f48771]"
+                }`}
+              >
+                {discordMsg.ok ? (
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                ) : (
+                  <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                )}
+                <span>{discordMsg.message}</span>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#2b2b2b] pt-4">
+              <button
+                type="button"
+                disabled={discordBusy}
+                onClick={() => handleSaveAndTestDiscord(true)}
+                className="flex items-center gap-1.5 rounded bg-[#5865F2] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4752C4] disabled:opacity-50"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {discordBusy ? "Sending..." : "Test Discord Ping"}
+              </button>
+              <button
+                type="button"
+                disabled={discordBusy}
+                onClick={() => handleSaveAndTestDiscord(false)}
+                className="rounded bg-[#007acc] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#1f8ad2] disabled:opacity-50"
+              >
+                Save Discord Settings
+              </button>
+            </div>
+          </div>
+        ) : tab === "bridge" ? (
           <div className="p-5 space-y-3.5">
             <div>
               <label className="block text-xs font-medium text-[#cccccc]">

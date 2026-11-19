@@ -10,14 +10,18 @@ from typing import Any
 from app.analytics import compute_trading_stats
 from app.database import (
     add_system_log,
+    create_execution_log,
     create_proposal,
     get_watchdog_config,
     get_watchlist,
     list_proposals,
     list_trade_logs,
     log_audit,
+    record_equity_snapshot,
+    update_proposal_status,
     upsert_mt5_deals,
 )
+from app.discord_notify import notify_discord_autopilot, notify_discord_proposal
 from app.gauntlet import evaluate_gauntlet
 from app.mt5_service import mt5_service
 from app.sheets_sync import (
@@ -121,6 +125,10 @@ class MarketWatchdog:
                 min_conf = float(cfg.get("min_confidence_pct", 75.0))
                 auto_propose = bool(cfg.get("auto_propose", True))
                 cooldown_sec = max(60, int(cfg.get("cooldown_min", 30)) * 60)
+                autopilot_enabled = bool(cfg.get("autopilot_enabled", False))
+                autopilot_min_conf = float(cfg.get("autopilot_min_confidence_pct", 80.0))
+                autopilot_fixed_lots = float(cfg.get("autopilot_fixed_lots", 0.01))
+                autopilot_max_open = int(cfg.get("autopilot_max_open_positions", 3))
 
                 symbols = symbols_override or get_watchlist()
                 open_positions = await asyncio.to_thread(mt5_service.get_open_positions)
@@ -163,9 +171,9 @@ class MarketWatchdog:
                         log_entry = add_system_log(log_level, "WATCHDOG", msg, symbol=resolved, details=compact)
                         await asyncio.to_thread(sync_watchdog_log_row, log_entry)
 
-                        # 3. Auto-queue proposal ONLY if 9/9 hard-fail-free PASS (>=75% ML+News Conf)
+                        # 3. Auto-queue proposal (or Auto-Pilot Demo execute) ONLY if 9/9 hard-fail-free PASS
                         if (
-                            auto_propose
+                            (auto_propose or autopilot_enabled)
                             and res["verdict"] == "PASS"
                             and res["fail_count"] == 0
                             and res.get("proposed_order")
@@ -175,9 +183,18 @@ class MarketWatchdog:
                             last_prop_ts = self._last_proposed_at.get(resolved, 0.0)
                             if (time.monotonic() - last_prop_ts) >= cooldown_sec:
                                 po = res["proposed_order"]
+                                should_autopilot = (
+                                    autopilot_enabled
+                                    and conf_pct is not None
+                                    and float(conf_pct) >= autopilot_min_conf
+                                    and len(open_symbols) < autopilot_max_open
+                                )
+                                prop_source = "AUTOPILOT" if should_autopilot else "WATCHDOG"
+                                prop_lots = autopilot_fixed_lots if should_autopilot else po["lots"]
+
                                 proposal = create_proposal(
                                     {
-                                        "source": "WATCHDOG",
+                                        "source": prop_source,
                                         "symbol": po["symbol"],
                                         "side": po["side"],
                                         "order_type": po["order_type"],
@@ -185,7 +202,7 @@ class MarketWatchdog:
                                         "sl": po["sl"],
                                         "tp": po["tp"],
                                         "risk_pct": po["risk_pct"],
-                                        "lots": po["lots"],
+                                        "lots": prop_lots,
                                         "est_risk_usd": po["est_risk_usd"],
                                         "est_reward_usd": po["est_reward_usd"],
                                         "rr_ratio": po["rr_ratio"],
@@ -203,24 +220,29 @@ class MarketWatchdog:
                                     }
                                 )
                                 self._last_proposed_at[resolved] = time.monotonic()
-                                pending_symbols.add(resolved)
-                                log_audit(
-                                    event_type="PROPOSAL_CREATED",
-                                    actor="WATCHDOG",
-                                    summary=(
-                                        f"Watchdog queued Proposal #{proposal['id']}: "
-                                        f"{proposal['side']} {proposal['lots']} {resolved}"
-                                    ),
-                                    payload={"proposal_id": proposal["id"]},
-                                )
-                                sig_log = add_system_log(
-                                    "SIGNAL",
-                                    "SIGNAL",
-                                    f"Queued Proposal #{proposal['id']} ({proposal['side']} {proposal['lots']} {resolved} @ {proposal['entry_price']}) for user confirmation",
-                                    symbol=resolved,
-                                )
-                                await asyncio.to_thread(sync_proposal_row, proposal)
-                                await asyncio.to_thread(sync_watchdog_log_row, sig_log)
+
+                                if should_autopilot:
+                                    await self._execute_autopilot_demo(proposal, resolved, tf, conf_pct, open_symbols)
+                                else:
+                                    pending_symbols.add(resolved)
+                                    log_audit(
+                                        event_type="PROPOSAL_CREATED",
+                                        actor="WATCHDOG",
+                                        summary=(
+                                            f"Watchdog queued Proposal #{proposal['id']}: "
+                                            f"{proposal['side']} {proposal['lots']} {resolved}"
+                                        ),
+                                        payload={"proposal_id": proposal["id"]},
+                                    )
+                                    sig_log = add_system_log(
+                                        "SIGNAL",
+                                        "SIGNAL",
+                                        f"Queued Proposal #{proposal['id']} ({proposal['side']} {proposal['lots']} {resolved} @ {proposal['entry_price']}) for user confirmation",
+                                        symbol=resolved,
+                                    )
+                                    await asyncio.to_thread(sync_proposal_row, proposal)
+                                    await asyncio.to_thread(sync_watchdog_log_row, sig_log)
+                                    await asyncio.to_thread(notify_discord_proposal, proposal)
                     except Exception as exc:
                         err_log = add_system_log("WARN", "WATCHDOG", f"{sym} scan skipped: {exc}", symbol=sym)
                         await asyncio.to_thread(sync_watchdog_log_row, err_log)
@@ -235,6 +257,116 @@ class MarketWatchdog:
                 }
             finally:
                 self.scanning_now = False
+
+    async def _execute_autopilot_demo(
+        self,
+        proposal: dict[str, Any],
+        resolved: str,
+        tf: str,
+        conf_pct: float | None,
+        open_symbols: set[str],
+    ) -> None:
+        """Execute an Auto-Pilot proposal ONLY on a DEMO account when confidence >= autopilot threshold."""
+        pid = int(proposal["id"])
+        try:
+            acc = await asyncio.to_thread(mt5_service.get_account_summary)
+            if acc["trade_mode"] != "DEMO":
+                add_system_log(
+                    "WARN",
+                    "AUTOPILOT",
+                    f"Auto-Pilot blocked on {acc['trade_mode']} account; Proposal #{pid} kept PENDING for manual confirm",
+                    symbol=resolved,
+                )
+                await asyncio.to_thread(notify_discord_proposal, proposal)
+                return
+
+            if not acc["terminal_trade_allowed"]:
+                add_system_log(
+                    "WARN",
+                    "AUTOPILOT",
+                    f"MT5 Algo Trading is OFF; Proposal #{pid} kept PENDING for manual confirm",
+                    symbol=resolved,
+                )
+                await asyncio.to_thread(notify_discord_proposal, proposal)
+                return
+
+            exec_res = await asyncio.to_thread(
+                mt5_service.send_order,
+                proposal["symbol"],
+                proposal["side"],
+                proposal["lots"],
+                None,
+                None,
+                proposal["sl"],
+                proposal["tp"],
+                30,
+                f"AUTOPILOT-P{pid}",
+                False,
+            )
+            new_status = "EXECUTED" if exec_res["success"] else "FAILED"
+            updated_prop = update_proposal_status(
+                pid,
+                new_status,
+                mt5_order_ticket=exec_res["order_ticket"],
+                mt5_deal_ticket=exec_res["deal_ticket"],
+                exec_price=exec_res["exec_price"],
+                exec_comment=f"AUTOPILOT ({conf_pct:.1f}%): {exec_res['retcode']} {exec_res['comment']}",
+            )
+            if exec_res["success"]:
+                open_symbols.add(resolved)
+                trade_log = create_execution_log(
+                    {
+                        "mt5_deal_ticket": exec_res["deal_ticket"] or None,
+                        "mt5_position_id": exec_res["order_ticket"] or None,
+                        "proposal_id": pid,
+                        "symbol": proposal["symbol"],
+                        "side": proposal["side"],
+                        "volume": exec_res["exec_volume"],
+                        "entry_price": exec_res["exec_price"],
+                        "sl": proposal["sl"],
+                        "tp": proposal["tp"],
+                        "status": "OPEN",
+                        "strategy_tag": f"AI_AUTOPILOT_{tf}",
+                        "notes": f"[AUTOPILOT {conf_pct:.1f}%] {proposal['rationale']}",
+                        "source": "AUTOPILOT",
+                    }
+                )
+                record_equity_snapshot(
+                    balance=acc["balance"],
+                    equity=acc["equity"],
+                    floating_pnl=acc["profit"],
+                    margin_free=acc["margin_free"],
+                    min_interval_sec=0,
+                )
+                sig_log = add_system_log(
+                    "SIGNAL",
+                    "AUTOPILOT",
+                    (
+                        f"🤖 Auto-Pilot DEMO executed #{pid}: {proposal['side']} {exec_res['exec_volume']} "
+                        f"{resolved} @ {exec_res['exec_price']} (Conf {conf_pct:.1f}%)"
+                    ),
+                    symbol=resolved,
+                )
+                log_audit(
+                    event_type="AUTOPILOT_EXECUTED",
+                    actor="AUTOPILOT",
+                    summary=f"Auto-Pilot executed Proposal #{pid}: {proposal['side']} {exec_res['exec_volume']} {resolved}",
+                    payload={"proposal_id": pid, "execution": exec_res},
+                )
+                if updated_prop:
+                    await asyncio.to_thread(sync_proposal_row, updated_prop)
+                    await asyncio.to_thread(notify_discord_autopilot, updated_prop, exec_res)
+                await asyncio.to_thread(sync_trade_rows, [trade_log])
+                await asyncio.to_thread(sync_watchdog_log_row, sig_log)
+            else:
+                add_system_log(
+                    "ERROR",
+                    "AUTOPILOT",
+                    f"Auto-Pilot Proposal #{pid} execution failed: {exec_res['comment']}",
+                    symbol=resolved,
+                )
+        except Exception as exc:
+            add_system_log("ERROR", "AUTOPILOT", f"Auto-Pilot Proposal #{pid} error: {exc}", symbol=resolved)
 
     def get_status(self) -> dict[str, Any]:
         return {

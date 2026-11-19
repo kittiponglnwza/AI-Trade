@@ -6,9 +6,11 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
+import urllib.parse
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from app.analytics import compute_trading_stats
 from app.config import ALLOWED_ORIGINS, API_KEY, DEFAULT_SYMBOL
@@ -17,7 +19,9 @@ from app.database import (
     create_execution_log,
     create_proposal,
     export_trade_logs_csv,
+    get_discord_config,
     get_latest_system_log_id,
+    get_position_manager_config,
     get_proposal,
     get_sheets_config,
     get_watchdog_config,
@@ -29,6 +33,8 @@ from app.database import (
     list_trade_logs,
     log_audit,
     record_equity_snapshot,
+    set_discord_config,
+    set_position_manager_config,
     set_sheets_config,
     set_watchdog_config,
     set_watchlist,
@@ -36,15 +42,25 @@ from app.database import (
     update_trade_log_notes,
     upsert_mt5_deals,
 )
+from app.discord_notify import (
+    notify_discord_execution_result,
+    notify_discord_proposal,
+    render_discord_action_html,
+    test_discord_connection,
+    verify_discord_action_token,
+)
 from app.gauntlet import evaluate_gauntlet, run_historical_backtest
 from app.ml_engine import get_model_status, train_symbol_model
 from app.mt5_service import mt5_service
 from app.news_service import fetch_symbol_news
+from app.position_manager import enrich_open_positions, position_manager
 from app.schemas import (
+    DiscordConfigRequest,
     GauntletEvaluateRequest,
     MLTrainRequest,
     OrderCheckRequest,
     PositionCloseRequest,
+    PositionManagerConfigPatchRequest,
     PositionModifyRequest,
     ProposalConfirmRequest,
     ProposalCreateRequest,
@@ -72,7 +88,9 @@ async def lifespan(_: FastAPI):
     except Exception:
         pass
     watchdog.start()
+    position_manager.start()
     yield
+    await position_manager.stop()
     await watchdog.stop()
     mt5_service.disconnect()
 
@@ -131,6 +149,7 @@ async def get_health() -> dict[str, Any]:
 async def get_market_snapshot(symbol: str = Query(default=DEFAULT_SYMBOL)) -> dict[str, Any]:
     try:
         snap = await asyncio.to_thread(mt5_service.get_market_snapshot, symbol)
+        snap["positions"] = enrich_open_positions(snap.get("positions") or [])
         acc = snap["account"]
         record_equity_snapshot(
             balance=acc["balance"],
@@ -235,6 +254,7 @@ async def post_create_proposal(body: ProposalCreateRequest) -> dict[str, Any]:
         symbol=proposal["symbol"],
     )
     asyncio.create_task(asyncio.to_thread(sync_proposal_row, proposal))
+    asyncio.create_task(asyncio.to_thread(notify_discord_proposal, proposal))
     return {"proposal": proposal, "order_check": checked}
 
 
@@ -644,6 +664,7 @@ async def post_gauntlet_evaluate(
             payload={"proposal_id": queued_proposal["id"]},
         )
         asyncio.create_task(asyncio.to_thread(sync_proposal_row, queued_proposal))
+        asyncio.create_task(asyncio.to_thread(notify_discord_proposal, queued_proposal))
 
     return {**result, "queued_proposal": queued_proposal}
 
@@ -759,6 +780,175 @@ async def post_sheets_sync_all() -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/position-manager/status")
+async def get_position_manager_status() -> dict[str, Any]:
+    return position_manager.get_status()
+
+
+@app.patch("/api/position-manager/config", dependencies=[Depends(verify_api_key)])
+async def patch_position_manager_config(body: PositionManagerConfigPatchRequest) -> dict[str, Any]:
+    patch = body.model_dump(exclude_none=True)
+    updated = set_position_manager_config(patch)
+    add_system_log("INFO", "POS_MGR", f"Updated Smart Position Manager config: {updated}")
+    return position_manager.get_status()
+
+
+@app.post("/api/position-manager/run", dependencies=[Depends(verify_api_key)])
+async def post_position_manager_run() -> dict[str, Any]:
+    res = await position_manager.run_cycle()
+    return {"cycle": res, "status": position_manager.get_status()}
+
+
+@app.post("/api/positions/{ticket}/breakeven", dependencies=[Depends(verify_api_key)])
+async def post_position_breakeven(ticket: int) -> dict[str, Any]:
+    try:
+        return await position_manager.move_position_to_breakeven(ticket)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.get("/api/discord/config")
+async def get_discord_config_endpoint() -> dict[str, Any]:
+    return get_discord_config()
+
+
+@app.put("/api/discord/config", dependencies=[Depends(verify_api_key)])
+async def put_discord_config_endpoint(body: DiscordConfigRequest) -> dict[str, Any]:
+    updated = set_discord_config(body.model_dump(exclude_none=True))
+    add_system_log("INFO", "DISCORD", f"Updated Discord notification config (enabled={updated.get('enabled')})")
+    return updated
+
+
+@app.post("/api/discord/test", dependencies=[Depends(verify_api_key)])
+async def post_discord_test(body: DiscordConfigRequest | None = None) -> dict[str, Any]:
+    try:
+        webhook_url = body.webhook_url if body and body.webhook_url else None
+        public_base = body.public_base_url if body and body.public_base_url else None
+        return await asyncio.to_thread(test_discord_connection, webhook_url, public_base)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/discord/action", response_class=HTMLResponse)
+async def get_discord_action_page(
+    proposal_id: int = Query(...),
+    action: str = Query(...),
+    token: str = Query(...),
+) -> HTMLResponse:
+    act = action.strip().lower()
+    if act not in ("confirm", "reject") or not verify_discord_action_token(proposal_id, act, token):
+        return HTMLResponse(
+            content=render_discord_action_html(None, act, token, executed=True, result_ok=False, result_message="ลิงก์ไม่ถูกต้องหรือหมดอายุ"),
+            status_code=403,
+        )
+    proposal = get_proposal(proposal_id)
+    return HTMLResponse(content=render_discord_action_html(proposal, act, token, executed=False))
+
+
+@app.post("/api/discord/action", response_class=HTMLResponse)
+async def post_discord_action_execute(request: Request) -> HTMLResponse:
+    raw_body = (await request.body()).decode("utf-8", errors="replace")
+    parsed = urllib.parse.parse_qs(raw_body)
+    try:
+        proposal_id = int((parsed.get("proposal_id") or [request.query_params.get("proposal_id", "0")])[0])
+    except ValueError:
+        proposal_id = 0
+    action = str((parsed.get("action") or [request.query_params.get("action", "")])[0]).strip().lower()
+    token = str((parsed.get("token") or [request.query_params.get("token", "")])[0]).strip()
+
+    if action not in ("confirm", "reject") or not verify_discord_action_token(proposal_id, action, token):
+        return HTMLResponse(
+            content=render_discord_action_html(None, action, token, executed=True, result_ok=False, result_message="Token ไม่ถูกต้อง"),
+            status_code=403,
+        )
+
+    proposal = get_proposal(proposal_id)
+    if proposal is None:
+        return HTMLResponse(
+            content=render_discord_action_html(None, action, token, executed=True, result_ok=False, result_message="ไม่พบ Proposal นี้"),
+            status_code=404,
+        )
+    if proposal["status"] != "PENDING":
+        return HTMLResponse(
+            content=render_discord_action_html(
+                proposal,
+                action,
+                token,
+                executed=True,
+                result_ok=proposal["status"] == "EXECUTED",
+                result_message=f"Proposal #{proposal_id} ถูกดำเนินการไปแล้ว ({proposal['status']})",
+            )
+        )
+
+    if action == "reject":
+        updated = update_proposal_status(proposal_id, "REJECTED", exec_comment="Rejected via Discord 1-Click")
+        log_audit(
+            event_type="PROPOSAL_REJECTED",
+            actor="DISCORD_USER",
+            summary=f"Rejected Proposal #{proposal_id} via Discord 1-Click",
+            payload={"proposal_id": proposal_id},
+        )
+        add_system_log("INFO", "DISCORD", f"Rejected Proposal #{proposal_id} via Discord 1-Click", symbol=proposal["symbol"])
+        if updated:
+            asyncio.create_task(asyncio.to_thread(sync_proposal_row, updated))
+            asyncio.create_task(
+                asyncio.to_thread(
+                    notify_discord_execution_result,
+                    updated,
+                    "reject",
+                    f"กดปฏิเสธแผนเทรด #{proposal_id} ({proposal['side']} {proposal['symbol']}) เรียบร้อยแล้ว",
+                )
+            )
+        return HTMLResponse(
+            content=render_discord_action_html(
+                updated or proposal,
+                action,
+                token,
+                executed=True,
+                result_ok=False,
+                result_message=f"❌ ปฏิเสธแผนเทรด #{proposal_id} เรียบร้อยแล้ว",
+            )
+        )
+
+    # Confirm via Discord 1-Click
+    try:
+        res = await post_confirm_proposal(proposal_id, ProposalConfirmRequest(comment=f"DISCORD-P{proposal_id}"))
+        updated_prop = res["proposal"]
+        exec_res = res["execution"]
+        msg = f"✅ ยิงออเดอร์เข้า MT5 สำเร็จ! Ticket #{exec_res.get('order_ticket')} @ {exec_res.get('exec_price')}"
+        if updated_prop:
+            asyncio.create_task(
+                asyncio.to_thread(
+                    notify_discord_execution_result,
+                    updated_prop,
+                    "confirm",
+                    msg,
+                )
+            )
+        return HTMLResponse(
+            content=render_discord_action_html(
+                updated_prop,
+                action,
+                token,
+                executed=True,
+                result_ok=True,
+                result_message=msg,
+            )
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            content=render_discord_action_html(
+                proposal,
+                action,
+                token,
+                executed=True,
+                result_ok=False,
+                result_message=f"⚠️ ยิงออเดอร์ไม่สำเร็จ: {exc.detail}",
+            ),
+            status_code=400,
+        )
+
+
 def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
     connected = mt5_service.is_connected()
     pending_count = len(list_proposals(status="PENDING", limit=100))
@@ -787,7 +977,7 @@ def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
     resolved = mt5_service.resolve_symbol(symbol)
     account = mt5_service.get_account_summary()
     quote = mt5_service.get_quote(resolved)
-    positions = mt5_service.get_open_positions()
+    positions = enrich_open_positions(mt5_service.get_open_positions())
     orders = mt5_service.get_pending_orders()
     candles_res = mt5_service.get_candles(resolved, tf, bars=5)
     last_bar = candles_res["candles"][-1] if candles_res["candles"] else None

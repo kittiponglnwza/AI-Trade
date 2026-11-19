@@ -1,7 +1,13 @@
-import { useState } from "react";
-import { Edit3, Trash2, X } from "lucide-react";
-import { closePosition, modifyPosition } from "../services/api";
-import type { OpenPosition, PendingOrder } from "../types/trading";
+import { useEffect, useState } from "react";
+import { Edit3, ShieldCheck, Trash2, X } from "lucide-react";
+import {
+  closePosition,
+  fetchPositionManagerStatus,
+  modifyPosition,
+  movePositionToBreakeven,
+  updatePositionManagerConfig,
+} from "../services/api";
+import type { OpenPosition, PendingOrder, PositionManagerConfig } from "../types/trading";
 
 interface PositionsTableProps {
   positions: OpenPosition[];
@@ -17,6 +23,39 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
   const [closeTarget, setCloseTarget] = useState<{ ticket: number; label: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [pmCfg, setPmCfg] = useState<PositionManagerConfig | null>(null);
+
+  useEffect(() => {
+    fetchPositionManagerStatus()
+      .then((res) => setPmCfg(res.config))
+      .catch(() => {});
+  }, []);
+
+  const handleTogglePmFlag = async (patch: Partial<PositionManagerConfig>) => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      const res = await updatePositionManagerConfig(patch);
+      setPmCfg(res.config);
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "อัปเดต Smart Position Manager ไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOneClickBe = async (ticket: number) => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      await movePositionToBreakeven(ticket);
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "เลื่อน SL บังทุนไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const openModify = (pos: OpenPosition) => {
     setEditTarget(pos);
@@ -59,12 +98,12 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
 
   return (
     <div className="rounded-md border border-[#2b2b2b] bg-[#252526]">
-      <div className="flex items-center justify-between border-b border-[#2b2b2b] px-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] px-3 py-1.5">
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => setSubTab("positions")}
-            className={`border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
+            className={`border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
               subTab === "positions"
                 ? "border-[#007acc] text-[#e1e1e1]"
                 : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
@@ -75,7 +114,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
           <button
             type="button"
             onClick={() => setSubTab("orders")}
-            className={`border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
+            className={`border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
               subTab === "orders"
                 ? "border-[#007acc] text-[#e1e1e1]"
                 : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
@@ -84,7 +123,67 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
             Pending Orders ({orders.length})
           </button>
         </div>
-        <span className="text-[11px] text-[#9d9d9d]">Real-time MT5 P/L</span>
+
+        {pmCfg && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleTogglePmFlag({ enabled: !pmCfg.enabled })}
+              className={`flex items-center gap-1 rounded border px-2 py-0.5 font-semibold ${
+                pmCfg.enabled
+                  ? "border-[#4ec9b0]/50 bg-[#4ec9b0]/15 text-[#4ec9b0]"
+                  : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
+              }`}
+              title="ระบบดูแลไม้หลังเข้าออเดอร์อัตโนมัติ (ตรวจสอบทุก 5 วินาที)"
+            >
+              <ShieldCheck className="h-3 w-3" />
+              Auto-Guard: {pmCfg.enabled ? "ON" : "OFF"}
+            </button>
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_breakeven: !pmCfg.auto_breakeven })}
+              className={`rounded border px-2 py-0.5 ${
+                pmCfg.enabled && pmCfg.auto_breakeven
+                  ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950]"
+                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+              }`}
+              title="เมื่อกำไรถึง +1.0R จะขยับ SL มาบังทุนให้อัตโนมัติ"
+            >
+              Auto-BE (+{pmCfg.be_trigger_r}R)
+            </button>
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_partial_tp: !pmCfg.auto_partial_tp })}
+              className={`rounded border px-2 py-0.5 ${
+                pmCfg.enabled && pmCfg.auto_partial_tp
+                  ? "border-[#007acc]/50 bg-[#007acc]/15 text-[#4fc1ff]"
+                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+              }`}
+              title="เมื่อกำไรถึง +1.5R จะแบ่งปิด 50% ล็อกกำไรเข้ากระเป๋า"
+            >
+              Partial {pmCfg.partial_close_pct}% (+{pmCfg.partial_trigger_r}R)
+            </button>
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_trailing_sl: !pmCfg.auto_trailing_sl })}
+              className={`rounded border px-2 py-0.5 ${
+                pmCfg.enabled && pmCfg.auto_trailing_sl
+                  ? "border-[#c586c0]/50 bg-[#c586c0]/15 text-[#e5a6e0]"
+                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+              }`}
+              title="เมื่อกำไรถึง +1.5R จะลาก SL ตามกราฟอัตโนมัติ"
+            >
+              Trail SL (+{pmCfg.trail_start_r}R)
+            </button>
+          </div>
+        )}
       </div>
 
       {errMsg && (
@@ -104,6 +203,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
               <th className="py-2 pr-3">Current</th>
               <th className="py-2 pr-3">SL</th>
               <th className="py-2 pr-3">TP</th>
+              <th className="py-2 pr-3">R / Guard</th>
               <th className="py-2 pr-3 text-right">P/L</th>
               <th className="py-2 text-right">Actions</th>
             </tr>
@@ -111,14 +211,14 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
           <tbody className="divide-y divide-[#2b2b2b]">
             {subTab === "positions" && positions.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-6 text-center text-[#6e6e6e]">
+                <td colSpan={10} className="py-6 text-center text-[#6e6e6e]">
                   ไม่มีออเดอร์ที่เปิดอยู่ใน MT5
                 </td>
               </tr>
             )}
             {subTab === "orders" && orders.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-6 text-center text-[#6e6e6e]">
+                <td colSpan={10} className="py-6 text-center text-[#6e6e6e]">
                   ไม่มี Pending Order ที่ตั้งค้างไว้
                 </td>
               </tr>
@@ -145,6 +245,39 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                   <td className="py-2 pr-3 font-medium text-[#e1e1e1]">{pos.price_current}</td>
                   <td className="py-2 pr-3 text-[#f14c4c]">{pos.sl > 0 ? pos.sl : "—"}</td>
                   <td className="py-2 pr-3 text-[#3fb950]">{pos.tp > 0 ? pos.tp : "—"}</td>
+                  <td className="py-2 pr-3">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {typeof pos.current_r === "number" && (
+                        <span
+                          className={`font-semibold ${
+                            pos.current_r >= 1
+                              ? "text-[#3fb950]"
+                              : pos.current_r >= 0
+                              ? "text-[#4fc1ff]"
+                              : "text-[#f14c4c]"
+                          }`}
+                        >
+                          {pos.current_r >= 0 ? "+" : ""}
+                          {pos.current_r.toFixed(2)}R
+                        </span>
+                      )}
+                      {pos.be_applied && (
+                        <span className="rounded bg-[#3fb950]/20 px-1 py-0.5 text-[9px] font-bold text-[#3fb950]">
+                          BE
+                        </span>
+                      )}
+                      {pos.partial_applied && (
+                        <span className="rounded bg-[#007acc]/20 px-1 py-0.5 text-[9px] font-bold text-[#4fc1ff]">
+                          50% TP
+                        </span>
+                      )}
+                      {(pos.trail_count ?? 0) > 0 && (
+                        <span className="rounded bg-[#c586c0]/20 px-1 py-0.5 text-[9px] font-bold text-[#e5a6e0]">
+                          TRAIL
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td
                     className={`py-2 pr-3 text-right font-bold ${
                       pos.profit >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
@@ -154,6 +287,17 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                   </td>
                   <td className="py-2 text-right">
                     <div className="inline-flex items-center gap-1.5">
+                      {!pos.be_applied && pos.profit > 0 && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleOneClickBe(pos.ticket)}
+                          className="rounded border border-[#4ec9b0]/40 bg-[#4ec9b0]/15 px-2 py-1 text-[10px] font-semibold text-[#4ec9b0] hover:bg-[#4ec9b0]/25"
+                          title="เลื่อน SL มาบังทุนทันที (1-Click Breakeven)"
+                        >
+                          บังทุน (BE)
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => openModify(pos)}
@@ -194,6 +338,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                   <td className="py-2 pr-3 text-[#9d9d9d]">{ord.price_current}</td>
                   <td className="py-2 pr-3 text-[#f14c4c]">{ord.sl > 0 ? ord.sl : "—"}</td>
                   <td className="py-2 pr-3 text-[#3fb950]">{ord.tp > 0 ? ord.tp : "—"}</td>
+                  <td className="py-2 pr-3 text-[#6e6e6e]">—</td>
                   <td className="py-2 pr-3 text-right text-[#6e6e6e]">PENDING</td>
                   <td className="py-2 text-right">
                     <button

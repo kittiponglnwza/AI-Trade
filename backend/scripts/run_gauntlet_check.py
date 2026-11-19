@@ -281,14 +281,83 @@ def main() -> int:
         ),
     )
 
-    # Gate 11: Cleanup temporary synthetic Sheets config/ping log rows & verify zero new orders
+    # Gate 11: Discord 1-Click Notify + Smart Position Manager (BE/Partial/Trail) + Auto-Pilot Stats
+    from app.discord_notify import (
+        build_proposal_discord_payload,
+        sign_discord_action_token,
+        verify_discord_action_token,
+    )
+    from app.position_manager import evaluate_position_plan
+
+    pm_status = http_json("GET", f"{BASE}/api/position-manager/status")
+    pm_cycle = http_json("POST", f"{BASE}/api/position-manager/run", api_key=API_KEY)
+    discord_cfg = http_json("GET", f"{BASE}/api/discord/config")
+    stats_res = http_json("GET", f"{BASE}/api/stats")
+
+    # Test Discord HMAC & Embed builder
+    sample_prop = {
+        "id": 999,
+        "symbol": "XAUUSD",
+        "side": "BUY",
+        "lots": 0.02,
+        "entry_price": 3700.0,
+        "sl": 3690.0,
+        "tp": 3720.0,
+        "rr_ratio": 2.0,
+        "est_risk_usd": 20.0,
+        "timeframe": "M15",
+        "gauntlet": {"confidence_pct": 82.5, "passed_count": 9, "total_gates": 9, "ml": {"top_features": []}},
+        "news": [],
+    }
+    tok_confirm = sign_discord_action_token(999, "confirm")
+    embed_payload = build_proposal_discord_payload(sample_prop, public_base_url=TUNNEL_BASE)
+    embed_desc = embed_payload["embeds"][0]["description"]
+
+    # Test Smart Position Manager math: +1.1R triggers Auto-BE; +1.6R triggers 50% Partial + Trailing SL
+    mock_quote = {"bid": 3711.0, "ask": 3711.2, "point": 0.01, "digits": 2, "stops_level_price": 0.5, "volume_min": 0.01, "volume_step": 0.01}
+    mock_pos_1r = {"ticket": 1, "symbol": "XAUUSD", "side": "BUY", "volume": 0.04, "price_open": 3700.0, "price_current": 3711.0, "sl": 3690.0, "tp": 3725.0}
+    mock_state_0 = {"risk_distance": 10.0, "be_applied": 0, "partial_applied": 0, "trail_count": 0}
+    plan_1r = evaluate_position_plan(mock_pos_1r, mock_state_0, mock_quote, pm_status["config"])
+
+    mock_quote_16r = {**mock_quote, "bid": 3716.0, "ask": 3716.2}
+    mock_pos_16r = {**mock_pos_1r, "price_current": 3716.0, "sl": 3700.05}
+    mock_state_1 = {"risk_distance": 10.0, "be_applied": 1, "partial_applied": 0, "trail_count": 0}
+    plan_16r = evaluate_position_plan(mock_pos_16r, mock_state_1, mock_quote_16r, pm_status["config"])
+
+    g11_features_ok = (
+        pm_status.get("running") is True
+        and pm_cycle["cycle"].get("mt5_connected") is True
+        and "webhook_url" in discord_cfg
+        and verify_discord_action_token(999, "confirm", tok_confirm) is True
+        and verify_discord_action_token(999, "confirm", "invalid-token") is False
+        and "action=confirm" in embed_desc
+        and "action=reject" in embed_desc
+        and plan_1r["be_applied"] is True
+        and plan_1r["new_sl"] == 3700.05
+        and plan_16r["partial_close_lots"] == 0.02
+        and plan_16r["trail_count"] == 1
+        and plan_16r["new_sl"] == 3708.0
+        and "by_actor" in stats_res
+        and {"AUTOPILOT", "AI_CONFIRMED", "MANUAL"}.issubset(set(stats_res["by_actor"].keys()))
+    )
+    record(
+        "G11_DISCORD_POS_MGR_AUTOPILOT",
+        g11_features_ok,
+        (
+            f"pm_running={pm_status.get('running')}, be_sl={plan_1r['new_sl']}, "
+            f"partial_lots={plan_16r['partial_close_lots']}, trail_sl={plan_16r['new_sl']}, "
+            f"actors={list(stats_res.get('by_actor', {}).keys())}"
+        ),
+    )
+
+    # Gate 12: Cleanup temporary synthetic Sheets config/ping log rows & verify zero new orders
     with get_connection(DB_PATH) as conn:
         conn.execute(
             "DELETE FROM system_logs WHERE category = 'SHEETS' AND (message LIKE '%webhook%' OR message LIKE '%Google Sheets%')"
         )
     snap_after = http_json("GET", f"{BASE}/api/market/snapshot?symbol=XAUUSD")
-    g11_ok = len(snap_after["positions"]) == len(snap["positions"])
-    record("G11_CLEANUP_AND_SAFETY", g11_ok, f"open_positions_unchanged={len(snap_after['positions'])}")
+    g12_ok = len(snap_after["positions"]) == len(snap["positions"])
+    record("G12_CLEANUP_AND_SAFETY", g12_ok, f"open_positions_unchanged={len(snap_after['positions'])}")
 
     failed = [r for r in results if not r[1]]
     print(f"\n=== GAUNTLET SUMMARY: {len(results) - len(failed)}/{len(results)} PASSED ===")

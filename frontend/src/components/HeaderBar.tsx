@@ -201,10 +201,11 @@ export function HeaderBar({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex h-7 w-7 items-center justify-center rounded border border-[#3c3c3c] bg-[#252526] text-[#cccccc] transition hover:bg-[#313131] hover:text-white"
-            title="Bridge & Google Sheets Settings"
+            className="flex items-center gap-1.5 rounded border border-[#5865F2]/60 bg-[#5865F2]/15 px-2.5 py-1 text-[11px] font-semibold text-[#e1e1e1] transition hover:bg-[#5865F2]/30 hover:text-white"
+            title="ตั้งค่า Discord 1-Click Notify, MT5 Bridge และ Google Sheets"
           >
-            <Settings className="h-3.5 w-3.5" />
+            <Settings className="h-3.5 w-3.5 text-[#c586c0]" />
+            <span>Discord / Settings</span>
           </button>
         </div>
       </div>

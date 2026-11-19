@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, ChevronDown, ChevronUp, Play, Power, Terminal } from "lucide-react";
+import { Activity, Bot, ChevronDown, ChevronUp, Play, Power, Terminal } from "lucide-react";
 import { triggerWatchdogScan, updateWatchdogConfig } from "../services/api";
 import type { SystemLogEntry, WatchdogStatus } from "../types/trading";
 
@@ -71,6 +71,46 @@ export function WatchdogConsole({
       onUpdated();
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "Failed to update min confidence");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleAutopilot = async () => {
+    if (!cfg) return;
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      await updateWatchdogConfig({ autopilot_enabled: !cfg.autopilot_enabled });
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Failed to toggle Auto-Pilot");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAutopilotConfChange = async (minConf: number) => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      await updateWatchdogConfig({ autopilot_min_confidence_pct: minConf });
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Failed to update Auto-Pilot threshold");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAutopilotLotChange = async (lots: number) => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      await updateWatchdogConfig({ autopilot_fixed_lots: lots });
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Failed to update Auto-Pilot lot size");
     } finally {
       setBusy(false);
     }
@@ -165,6 +205,49 @@ export function WatchdogConsole({
                 <option value={80}>Gate ≥80%</option>
                 <option value={85}>Gate ≥85%</option>
               </select>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={handleToggleAutopilot}
+                className={`flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-semibold ${
+                  cfg.autopilot_enabled
+                    ? "border-[#c586c0] bg-[#c586c0]/20 text-[#e5a6e0]"
+                    : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
+                }`}
+                title="โหมดปล่อยบอทยิงพอร์ต DEMO อัตโนมัติเฉพาะไม้ที่มั่นใจสูง (เช่น ≥80%)"
+              >
+                <Bot className="h-3 w-3" />
+                Auto-Pilot Demo: {cfg.autopilot_enabled ? "ON" : "OFF"}
+              </button>
+
+              {cfg.autopilot_enabled && (
+                <>
+                  <select
+                    value={cfg.autopilot_min_confidence_pct ?? 80}
+                    disabled={busy}
+                    onChange={(e) => handleAutopilotConfChange(Number(e.target.value))}
+                    className="rounded border border-[#c586c0]/50 bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#e5a6e0]"
+                    title="Auto-Pilot minimum confidence threshold"
+                  >
+                    <option value={75}>Auto ≥75%</option>
+                    <option value={80}>Auto ≥80%</option>
+                    <option value={85}>Auto ≥85%</option>
+                    <option value={90}>Auto ≥90%</option>
+                  </select>
+                  <select
+                    value={cfg.autopilot_fixed_lots ?? 0.01}
+                    disabled={busy}
+                    onChange={(e) => handleAutopilotLotChange(Number(e.target.value))}
+                    className="rounded border border-[#c586c0]/50 bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#e5a6e0]"
+                    title="Fixed Demo Lot size for Auto-Pilot trades"
+                  >
+                    <option value={0.01}>0.01 Lot</option>
+                    <option value={0.02}>0.02 Lot</option>
+                    <option value={0.05}>0.05 Lot</option>
+                  </select>
+                </>
+              )}
 
               <select
                 value={cfg.interval_sec}

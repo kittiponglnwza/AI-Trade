@@ -80,6 +80,33 @@ class WatchdogConfigPatchRequest(BaseModel):
     min_confidence_pct: float | None = Field(default=None, ge=50.0, le=95.0)
     auto_propose: bool | None = None
     cooldown_min: int | None = Field(default=None, ge=1, le=1440)
+    autopilot_enabled: bool | None = None
+    autopilot_min_confidence_pct: float | None = Field(default=None, ge=65.0, le=95.0)
+    autopilot_fixed_lots: float | None = Field(default=None, ge=0.01, le=1.0)
+    autopilot_max_open_positions: int | None = Field(default=None, ge=1, le=10)
+
+
+class PositionManagerConfigPatchRequest(BaseModel):
+    enabled: bool | None = None
+    poll_interval_sec: int | None = Field(default=None, ge=2, le=120)
+    auto_breakeven: bool | None = None
+    be_trigger_r: float | None = Field(default=None, ge=0.3, le=5.0)
+    be_offset_points: int | None = Field(default=None, ge=0, le=100)
+    auto_partial_tp: bool | None = None
+    partial_trigger_r: float | None = Field(default=None, ge=0.5, le=10.0)
+    partial_close_pct: float | None = Field(default=None, ge=10.0, le=90.0)
+    auto_trailing_sl: bool | None = None
+    trail_start_r: float | None = Field(default=None, ge=0.5, le=10.0)
+    trail_distance_r: float | None = Field(default=None, ge=0.2, le=5.0)
+
+
+class DiscordConfigRequest(BaseModel):
+    enabled: bool | None = None
+    webhook_url: str | None = None
+    public_base_url: str | None = None
+    notify_proposals: bool | None = None
+    notify_autopilot: bool | None = None
+    notify_position_manager: bool | None = None
 
 
 class SheetsConfigRequest(BaseModel):

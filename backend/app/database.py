@@ -40,6 +40,33 @@ DEFAULT_WATCHDOG_CONFIG: dict[str, Any] = {
     "min_confidence_pct": 75.0,
     "auto_propose": True,
     "cooldown_min": 30,
+    "autopilot_enabled": False,
+    "autopilot_min_confidence_pct": 80.0,
+    "autopilot_fixed_lots": 0.01,
+    "autopilot_max_open_positions": 3,
+}
+
+DEFAULT_POSITION_MANAGER_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "poll_interval_sec": 5,
+    "auto_breakeven": True,
+    "be_trigger_r": 1.0,
+    "be_offset_points": 5,
+    "auto_partial_tp": True,
+    "partial_trigger_r": 1.5,
+    "partial_close_pct": 50.0,
+    "auto_trailing_sl": True,
+    "trail_start_r": 1.5,
+    "trail_distance_r": 0.8,
+}
+
+DEFAULT_DISCORD_CONFIG: dict[str, Any] = {
+    "enabled": False,
+    "webhook_url": "",
+    "public_base_url": "https://mod-brokers-invite-thus.trycloudflare.com",
+    "notify_proposals": True,
+    "notify_autopilot": True,
+    "notify_position_manager": True,
 }
 
 
@@ -146,6 +173,22 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS position_states (
+                    ticket INTEGER PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    initial_volume REAL NOT NULL,
+                    entry_price REAL NOT NULL,
+                    initial_sl REAL,
+                    initial_tp REAL,
+                    risk_distance REAL NOT NULL,
+                    be_applied INTEGER NOT NULL DEFAULT 0,
+                    partial_applied INTEGER NOT NULL DEFAULT 0,
+                    trail_count INTEGER NOT NULL DEFAULT 0,
+                    last_action TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
 
@@ -444,7 +487,7 @@ def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> di
                             entry_price, exit_price, open_time, close_time,
                             gross_profit, commission, swap, net_profit, status,
                             strategy_tag, notes, source, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', ?, ?, 'MT5_SYNC', ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', ?, ?, ?, ?, ?)
                         """,
                         (
                             deal_ticket,
@@ -462,6 +505,7 @@ def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> di
                             d["net_profit"],
                             d.get("strategy_tag", ""),
                             d.get("notes", ""),
+                            d.get("source", "MT5_SYNC"),
                             now,
                             now,
                         ),
@@ -685,6 +729,106 @@ def set_sheets_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[st
             cfg[k] = patch[k]
     set_setting("sheets_config", cfg, db_path=db_path)
     return cfg
+
+
+def get_position_manager_config(db_path: Path = DB_PATH) -> dict[str, Any]:
+    val = get_setting("position_manager_config", {}, db_path=db_path)
+    cfg = dict(DEFAULT_POSITION_MANAGER_CONFIG)
+    if isinstance(val, dict):
+        cfg.update({k: v for k, v in val.items() if k in DEFAULT_POSITION_MANAGER_CONFIG and v is not None})
+    return cfg
+
+
+def set_position_manager_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    cfg = get_position_manager_config(db_path=db_path)
+    for k, v in patch.items():
+        if k in DEFAULT_POSITION_MANAGER_CONFIG and v is not None:
+            cfg[k] = v
+    set_setting("position_manager_config", cfg, db_path=db_path)
+    return cfg
+
+
+def get_discord_config(db_path: Path = DB_PATH) -> dict[str, Any]:
+    val = get_setting("discord_config", {}, db_path=db_path)
+    cfg = dict(DEFAULT_DISCORD_CONFIG)
+    if isinstance(val, dict):
+        cfg.update({k: v for k, v in val.items() if k in DEFAULT_DISCORD_CONFIG and v is not None})
+    return cfg
+
+
+def set_discord_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    cfg = get_discord_config(db_path=db_path)
+    for k, v in patch.items():
+        if k in DEFAULT_DISCORD_CONFIG and v is not None:
+            cfg[k] = v
+    set_setting("discord_config", cfg, db_path=db_path)
+    return cfg
+
+
+def get_position_state(ticket: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            row = conn.execute("SELECT * FROM position_states WHERE ticket = ?", (ticket,)).fetchone()
+            return dict(row) if row else None
+
+
+def upsert_position_state(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    now = utc_now_iso()
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO position_states (
+                    ticket, symbol, side, initial_volume, entry_price,
+                    initial_sl, initial_tp, risk_distance,
+                    be_applied, partial_applied, trail_count, last_action, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticket) DO UPDATE SET
+                    be_applied = excluded.be_applied,
+                    partial_applied = excluded.partial_applied,
+                    trail_count = excluded.trail_count,
+                    last_action = excluded.last_action,
+                    risk_distance = CASE
+                        WHEN position_states.risk_distance > 0 THEN position_states.risk_distance
+                        ELSE excluded.risk_distance
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(data["ticket"]),
+                    str(data["symbol"]),
+                    str(data["side"]),
+                    float(data["initial_volume"]),
+                    float(data["entry_price"]),
+                    data.get("initial_sl"),
+                    data.get("initial_tp"),
+                    float(data["risk_distance"]),
+                    int(bool(data.get("be_applied", 0))),
+                    int(bool(data.get("partial_applied", 0))),
+                    int(data.get("trail_count", 0)),
+                    str(data.get("last_action", "")),
+                    now,
+                ),
+            )
+            row = conn.execute("SELECT * FROM position_states WHERE ticket = ?", (int(data["ticket"]),)).fetchone()
+            return dict(row) if row else {}
+
+
+def list_position_states(db_path: Path = DB_PATH) -> dict[int, dict[str, Any]]:
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            rows = conn.execute("SELECT * FROM position_states").fetchall()
+            return {int(r["ticket"]): dict(r) for r in rows}
+
+
+def prune_position_states(active_tickets: set[int], db_path: Path = DB_PATH) -> None:
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            rows = conn.execute("SELECT ticket FROM position_states").fetchall()
+            for r in rows:
+                t = int(r["ticket"])
+                if t not in active_tickets:
+                    conn.execute("DELETE FROM position_states WHERE ticket = ?", (t,))
 
 
 def add_system_log(

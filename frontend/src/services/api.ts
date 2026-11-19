@@ -2,12 +2,15 @@ import type {
   AuditEvent,
   BacktestResult,
   CandlesResponse,
+  DiscordConfig,
   GauntletEvaluation,
   MLModelStatus,
   MarketSnapshot,
   NewsResponse,
   OrderCheckResult,
   OrderSide,
+  PositionManagerConfig,
+  PositionManagerStatus,
   SheetsConfig,
   SymbolSearchItem,
   SystemLogEntry,
@@ -385,6 +388,63 @@ export function syncAllSheets() {
   return requestJson<{ ok: boolean; written: Record<string, number> }>(
     "/api/sheets/sync-all",
     { method: "POST" },
+    true
+  );
+}
+
+export function fetchPositionManagerStatus() {
+  return requestJson<PositionManagerStatus>("/api/position-manager/status");
+}
+
+export function updatePositionManagerConfig(patch: Partial<PositionManagerConfig>) {
+  return requestJson<PositionManagerStatus>(
+    "/api/position-manager/config",
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    },
+    true
+  );
+}
+
+export function runPositionManagerNow() {
+  return requestJson<{ cycle: Record<string, unknown>; status: PositionManagerStatus }>(
+    "/api/position-manager/run",
+    { method: "POST" },
+    true
+  );
+}
+
+export function movePositionToBreakeven(ticket: number) {
+  return requestJson<Record<string, unknown>>(
+    `/api/positions/${ticket}/breakeven`,
+    { method: "POST" },
+    true
+  );
+}
+
+export function fetchDiscordConfig() {
+  return requestJson<DiscordConfig>("/api/discord/config");
+}
+
+export function saveDiscordConfig(cfg: Partial<DiscordConfig>) {
+  return requestJson<DiscordConfig>(
+    "/api/discord/config",
+    {
+      method: "PUT",
+      body: JSON.stringify(cfg),
+    },
+    true
+  );
+}
+
+export function testDiscordWebhook(cfg?: Partial<DiscordConfig>) {
+  return requestJson<{ ok: boolean; status: number; message: string }>(
+    "/api/discord/test",
+    {
+      method: "POST",
+      body: JSON.stringify(cfg || {}),
+    },
     true
   );
 }

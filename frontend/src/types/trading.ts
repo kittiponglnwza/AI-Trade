@@ -65,6 +65,12 @@ export interface OpenPosition {
   magic: number;
   comment: string;
   open_time: string;
+  current_r?: number;
+  risk_distance?: number;
+  be_applied?: boolean;
+  partial_applied?: boolean;
+  trail_count?: number;
+  last_action?: string;
 }
 
 export interface PendingOrder {
@@ -404,6 +410,40 @@ export interface WatchdogConfig {
   min_confidence_pct: number;
   auto_propose: boolean;
   cooldown_min: number;
+  autopilot_enabled?: boolean;
+  autopilot_min_confidence_pct?: number;
+  autopilot_fixed_lots?: number;
+  autopilot_max_open_positions?: number;
+}
+
+export interface PositionManagerConfig {
+  enabled: boolean;
+  poll_interval_sec: number;
+  auto_breakeven: boolean;
+  be_trigger_r: number;
+  be_offset_points: number;
+  auto_partial_tp: boolean;
+  partial_trigger_r: number;
+  partial_close_pct: number;
+  auto_trailing_sl: boolean;
+  trail_start_r: number;
+  trail_distance_r: number;
+}
+
+export interface PositionManagerStatus {
+  running: boolean;
+  last_run_at: string | null;
+  actions_taken_count: number;
+  config: PositionManagerConfig;
+}
+
+export interface DiscordConfig {
+  enabled: boolean;
+  webhook_url: string;
+  public_base_url: string;
+  notify_proposals: boolean;
+  notify_autopilot: boolean;
+  notify_position_manager: boolean;
 }
 
 export interface WatchdogScanItem {
@@ -457,6 +497,16 @@ export interface SideBreakdown {
   net_profit: number;
 }
 
+export interface ActorBreakdown {
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number;
+  net_profit: number;
+  expectancy: number;
+  profit_factor: number | null;
+}
+
 export interface TradingStats {
   total_trades: number;
   wins: number;
@@ -483,6 +533,11 @@ export interface TradingStats {
   by_side: {
     BUY: SideBreakdown;
     SELL: SideBreakdown;
+  };
+  by_actor?: {
+    AUTOPILOT: ActorBreakdown;
+    AI_CONFIRMED: ActorBreakdown;
+    MANUAL: ActorBreakdown;
   };
   open_logged_count?: number;
 }

@@ -59,6 +59,35 @@ def compute_trading_stats(
                 "BUY": {"trades": 0, "wins": 0, "win_rate_pct": 0.0, "net_profit": 0.0},
                 "SELL": {"trades": 0, "wins": 0, "win_rate_pct": 0.0, "net_profit": 0.0},
             },
+            "by_actor": {
+                "AUTOPILOT": {
+                    "trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "win_rate_pct": 0.0,
+                    "net_profit": 0.0,
+                    "expectancy": 0.0,
+                    "profit_factor": 0.0,
+                },
+                "AI_CONFIRMED": {
+                    "trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "win_rate_pct": 0.0,
+                    "net_profit": 0.0,
+                    "expectancy": 0.0,
+                    "profit_factor": 0.0,
+                },
+                "MANUAL": {
+                    "trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "win_rate_pct": 0.0,
+                    "net_profit": 0.0,
+                    "expectancy": 0.0,
+                    "profit_factor": 0.0,
+                },
+            },
         }
 
     pnls = [float(t.get("net_profit") or 0.0) for t in ordered]
@@ -124,6 +153,11 @@ def compute_trading_stats(
         "BUY": {"trades": 0, "wins": 0, "net_profit": 0.0},
         "SELL": {"trades": 0, "wins": 0, "net_profit": 0.0},
     }
+    actor_raw: dict[str, list[float]] = {
+        "AUTOPILOT": [],
+        "AI_CONFIRMED": [],
+        "MANUAL": [],
+    }
 
     for idx, trade in enumerate(ordered, start=1):
         pnl = float(trade.get("net_profit") or 0.0)
@@ -165,9 +199,45 @@ def compute_trading_stats(
         if pnl > 0:
             side_stats[base_side]["wins"] += 1
 
+        src = str(trade.get("source") or "").upper()
+        tag = str(trade.get("strategy_tag") or "").upper()
+        notes = str(trade.get("notes") or "").upper()
+        if src == "AUTOPILOT" or "AUTOPILOT" in tag or "AUTOPILOT" in notes:
+            actor_key = "AUTOPILOT"
+        elif src in ("WATCHDOG", "GAUNTLET") or "WATCHDOG" in notes or "GAUNTLET" in notes:
+            actor_key = "AI_CONFIRMED"
+        else:
+            actor_key = "MANUAL"
+        actor_raw[actor_key].append(pnl)
+
     for key, val in side_stats.items():
         cnt = val["trades"]
         val["win_rate_pct"] = round((val["wins"] / cnt) * 100.0, 2) if cnt > 0 else 0.0
+
+    actor_stats: dict[str, dict[str, Any]] = {}
+    for actor_key, actor_pnls in actor_raw.items():
+        a_total = len(actor_pnls)
+        a_wins = sum(1 for p in actor_pnls if p > 0)
+        a_losses = sum(1 for p in actor_pnls if p < 0)
+        a_net = round(sum(actor_pnls), 2)
+        a_gp = sum(p for p in actor_pnls if p > 0)
+        a_gl = abs(sum(p for p in actor_pnls if p < 0))
+        a_pf: float | None
+        if a_gl > 0:
+            a_pf = round(a_gp / a_gl, 2)
+        elif a_gp > 0:
+            a_pf = None
+        else:
+            a_pf = 0.0
+        actor_stats[actor_key] = {
+            "trades": a_total,
+            "wins": a_wins,
+            "losses": a_losses,
+            "win_rate_pct": round((a_wins / a_total) * 100.0, 2) if a_total > 0 else 0.0,
+            "net_profit": a_net,
+            "expectancy": round(a_net / a_total, 2) if a_total > 0 else 0.0,
+            "profit_factor": a_pf,
+        }
 
     daily_pnl = sorted(daily_buckets.values(), key=lambda item: item["date"])
 
@@ -195,4 +265,5 @@ def compute_trading_stats(
         "equity_curve": equity_curve,
         "daily_pnl": daily_pnl,
         "by_side": side_stats,
+        "by_actor": actor_stats,
     }

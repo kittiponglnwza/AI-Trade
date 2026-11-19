@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, type UTCTimestamp } from "lightweight-charts";
-import { RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { Bot, RefreshCw, Sparkles, TrendingDown, TrendingUp, UserCheck } from "lucide-react";
 import { syncLogs } from "../services/api";
-import type { TradingStats } from "../types/trading";
+import type { ActorBreakdown, TradingStats } from "../types/trading";
 
 interface StatsDashboardProps {
   stats: TradingStats | null;
@@ -163,6 +163,104 @@ export function StatsDashboard({ stats, onRefresh }: StatsDashboardProps) {
           </div>
         ))}
       </div>
+
+      {stats?.by_actor && (
+        <div className="rounded-md border border-[#2b2b2b] bg-[#252526] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-[#e1e1e1]">
+                Head-to-Head: 🤖 AI Auto-Pilot Demo vs ✨ AI แนะนำ (คนกดยืนยัน) vs 👤 เทรดมือ (Manual)
+              </h3>
+              <p className="text-[11px] text-[#9d9d9d]">
+                เปรียบเทียบความแม่นยำและกำไรสุทธิแยกตามแหล่งที่มาของออเดอร์
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            {(
+              [
+                {
+                  key: "AUTOPILOT" as const,
+                  title: "🤖 AI Auto-Pilot (ยิงเอง ≥80%)",
+                  badge: "border-[#c586c0]/40 bg-[#c586c0]/15 text-[#e5a6e0]",
+                  icon: <Bot className="h-4 w-4 text-[#e5a6e0]" />,
+                },
+                {
+                  key: "AI_CONFIRMED" as const,
+                  title: "✨ AI แนะนำ + คนกดยืนยัน (≥75%)",
+                  badge: "border-[#007acc]/40 bg-[#007acc]/15 text-[#4fc1ff]",
+                  icon: <Sparkles className="h-4 w-4 text-[#4fc1ff]" />,
+                },
+                {
+                  key: "MANUAL" as const,
+                  title: "👤 เทรดมือ / ซิงก์จาก MT5 (Manual)",
+                  badge: "border-[#4ec9b0]/40 bg-[#4ec9b0]/15 text-[#4ec9b0]",
+                  icon: <UserCheck className="h-4 w-4 text-[#4ec9b0]" />,
+                },
+              ] as const
+            ).map((bucket) => {
+              const item: ActorBreakdown = stats.by_actor?.[bucket.key] ?? {
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                win_rate_pct: 0,
+                net_profit: 0,
+                expectancy: 0,
+                profit_factor: 0,
+              };
+              return (
+                <div
+                  key={bucket.key}
+                  className="font-mono-num rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3.5 text-xs"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-sans font-semibold text-[#e1e1e1]">
+                      {bucket.icon}
+                      <span>{bucket.title}</span>
+                    </div>
+                    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${bucket.badge}`}>
+                      {item.trades} ไม้
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#2b2b2b] pt-2.5">
+                    <div>
+                      <div className="text-[10px] text-[#9d9d9d]">Net Profit</div>
+                      <div
+                        className={`text-sm font-bold ${
+                          item.net_profit >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                        }`}
+                      >
+                        {item.net_profit >= 0 ? "+" : ""}${item.net_profit.toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#9d9d9d]">Win Rate</div>
+                      <div className="text-sm font-bold text-[#e1e1e1]">
+                        {item.win_rate_pct.toFixed(1)}%{" "}
+                        <span className="text-[10px] font-normal text-[#9d9d9d]">
+                          ({item.wins}W/{item.losses}L)
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#9d9d9d]">Expectancy</div>
+                      <div className="text-xs font-semibold text-[#cccccc]">
+                        ${item.expectancy.toFixed(2)} / ไม้
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-[#9d9d9d]">Profit Factor</div>
+                      <div className="text-xs font-semibold text-[#4fc1ff]">
+                        {item.profit_factor === null ? "∞" : item.profit_factor.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <div className="rounded-md border border-[#2b2b2b] bg-[#252526] p-4 lg:col-span-2">

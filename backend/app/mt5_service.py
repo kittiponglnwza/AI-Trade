@@ -904,6 +904,19 @@ class MT5BridgeService:
 
             open_ts = int(ref_in.time)
             close_ts = int(out_deals[-1].time)
+            in_comment = str(getattr(ref_in, "comment", "") or "")
+            out_comment = str(out_deals[-1].comment or "")
+            in_comment_u = in_comment.upper()
+            if in_comment_u.startswith("AUTOPILOT"):
+                deal_source = "AUTOPILOT"
+            elif in_comment_u.startswith("WATCHDOG"):
+                deal_source = "WATCHDOG"
+            elif in_comment_u.startswith("GAUNTLET"):
+                deal_source = "GAUNTLET"
+            elif in_comment_u.startswith("WEB"):
+                deal_source = "WEB"
+            else:
+                deal_source = "MT5_SYNC"
 
             closed.append(
                 {
@@ -920,7 +933,8 @@ class MT5BridgeService:
                     "commission": round(commission, 2),
                     "swap": round(swap, 2),
                     "net_profit": round(net_profit, 2),
-                    "notes": str(out_deals[-1].comment or ""),
+                    "notes": f"{in_comment} {out_comment}".strip(),
+                    "source": deal_source,
                 }
             )
 
