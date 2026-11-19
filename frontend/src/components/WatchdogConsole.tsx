@@ -63,6 +63,19 @@ export function WatchdogConsole({
     }
   };
 
+  const handleMinConfChange = async (minConf: number) => {
+    setBusy(true);
+    setErrMsg(null);
+    try {
+      await updateWatchdogConfig({ min_confidence_pct: minConf });
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Failed to update min confidence");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleScanNow = async () => {
     setBusy(true);
     setErrMsg(null);
@@ -140,6 +153,20 @@ export function WatchdogConsole({
               </button>
 
               <select
+                value={cfg.min_confidence_pct ?? 75}
+                disabled={busy}
+                onChange={(e) => handleMinConfChange(Number(e.target.value))}
+                className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#4fc1ff]"
+                title="Minimum ML + News Confidence required to queue proposals"
+              >
+                <option value={65}>Gate ≥65%</option>
+                <option value={70}>Gate ≥70%</option>
+                <option value={75}>Gate ≥75%</option>
+                <option value={80}>Gate ≥80%</option>
+                <option value={85}>Gate ≥85%</option>
+              </select>
+
+              <select
                 value={cfg.interval_sec}
                 disabled={busy}
                 onChange={(e) => handleIntervalChange(Number(e.target.value))}
@@ -195,7 +222,7 @@ export function WatchdogConsole({
                   <span
                     className={
                       item.verdict === "PASS"
-                        ? "text-[#3fb950] font-semibold"
+                        ? "font-semibold text-[#3fb950]"
                         : item.verdict === "WAIT"
                         ? "text-[#dcdcaa]"
                         : "text-[#f14c4c]"
@@ -203,6 +230,9 @@ export function WatchdogConsole({
                   >
                     {item.verdict} ({item.passed_count}/{item.total_gates})
                   </span>
+                  {typeof item.confidence_pct === "number" && (
+                    <span className="text-[#c586c0]">{item.confidence_pct.toFixed(0)}%</span>
+                  )}
                 </div>
               ))}
             </div>

@@ -37,6 +37,7 @@ DEFAULT_WATCHDOG_CONFIG: dict[str, Any] = {
     "interval_sec": 120,
     "timeframe": "M15",
     "risk_pct": 15.0,
+    "min_confidence_pct": 75.0,
     "auto_propose": True,
     "cooldown_min": 30,
 }

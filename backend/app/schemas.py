@@ -68,6 +68,7 @@ class GauntletEvaluateRequest(BaseModel):
     symbol: str = Field(default="XAUUSD")
     tf: str = Field(default="M15")
     risk_pct: float = Field(default=15.0, gt=0, le=50)
+    min_confidence_pct: float = Field(default=75.0, ge=50.0, le=95.0)
     auto_queue: bool = Field(default=False)
 
 
@@ -76,6 +77,7 @@ class WatchdogConfigPatchRequest(BaseModel):
     interval_sec: int | None = Field(default=None, ge=30, le=3600)
     timeframe: str | None = None
     risk_pct: float | None = Field(default=None, gt=0, le=50)
+    min_confidence_pct: float | None = Field(default=None, ge=50.0, le=95.0)
     auto_propose: bool | None = None
     cooldown_min: int | None = Field(default=None, ge=1, le=1440)
 
@@ -85,3 +87,9 @@ class SheetsConfigRequest(BaseModel):
     webhook_url: str | None = None
     service_account_file: str | None = None
     sheet_id: str | None = None
+
+
+class MLTrainRequest(BaseModel):
+    symbol: str = Field(default="XAUUSD")
+    tf: str = Field(default="M15")
+    bars: int = Field(default=10000, ge=1000, le=12000)

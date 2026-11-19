@@ -3,6 +3,7 @@ import type {
   BacktestResult,
   CandlesResponse,
   GauntletEvaluation,
+  MLModelStatus,
   MarketSnapshot,
   NewsResponse,
   OrderCheckResult,
@@ -278,14 +279,43 @@ export function fetchNews(symbol: string, refresh = false) {
   );
 }
 
-export function evaluateGauntlet(symbol: string, tf: Timeframe, riskPct = 15, autoQueue = false) {
+export function evaluateGauntlet(
+  symbol: string,
+  tf: Timeframe,
+  riskPct = 15,
+  autoQueue = false,
+  minConfidencePct = 75
+) {
   return requestJson<GauntletEvaluation>(
     "/api/gauntlet/evaluate",
     {
       method: "POST",
-      body: JSON.stringify({ symbol, tf, risk_pct: riskPct, auto_queue: autoQueue }),
+      body: JSON.stringify({
+        symbol,
+        tf,
+        risk_pct: riskPct,
+        min_confidence_pct: minConfidencePct,
+        auto_queue: autoQueue,
+      }),
     },
     autoQueue
+  );
+}
+
+export function fetchMlStatus(symbol: string, tf: Timeframe) {
+  return requestJson<MLModelStatus>(
+    `/api/ml/status?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`
+  );
+}
+
+export function trainMlModel(symbol: string, tf: Timeframe, bars = 10000) {
+  return requestJson<MLModelStatus>(
+    "/api/ml/train",
+    {
+      method: "POST",
+      body: JSON.stringify({ symbol, tf, bars }),
+    },
+    true
   );
 }
 

@@ -19,6 +19,7 @@ backend/.env
 backend/data/*.db
 backend/data/*.db-*
 backend/data/*.sqlite*
+backend/data/models/
 
 # Generated chart artifacts
 charts/*.png

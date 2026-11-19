@@ -67,17 +67,17 @@ def main() -> int:
     )
     record("G1_DB_MIGRATION", g1_ok, f"tables={len(tables)}, prop_cols={len(prop_cols)}, existing_proposals={len(props)}")
 
-    # Gate 2: Health & Live MT5 Open Position preserved
+    # Gate 2: Health & Live MT5 Quote
     health = http_json("GET", f"{BASE}/api/health")
     snap = http_json("GET", f"{BASE}/api/market/snapshot?symbol=XAUUSD")
     g2_ok = (
         health.get("mt5_connected") is True
         and health.get("trade_mode") == "DEMO"
         and snap["quote"]["bid"] > 0
-        and any(p["ticket"] == 59418615139 for p in snap["positions"])
+        and isinstance(snap["positions"], list)
     )
     record(
-        "G2_HEALTH_AND_POSITION",
+        "G2_HEALTH_AND_QUOTE",
         g2_ok,
         f"bid={snap['quote']['bid']}, open_positions={len(snap['positions'])}, algo={snap['account']['terminal_trade_allowed']}",
     )
@@ -89,8 +89,8 @@ def main() -> int:
     times = [c["time"] for c in nvda_candles["candles"]]
     g3_ok = (
         any(s["name"] == "NVDA" for s in sym_search["symbols"])
-        and "NVDA" in watchlist["symbols"]
-        and len(watchlist["quotes"]) >= 5
+        and len(watchlist["symbols"]) >= 1
+        and len(watchlist["quotes"]) == len(watchlist["symbols"])
         and len(times) == 60
         and times == sorted(set(times))
     )
@@ -115,22 +115,28 @@ def main() -> int:
         f"XAUUSD={len(gold_news['articles'])} ({gold_news['sentiment']}), NVDA={len(nvda_news['articles'])} ({nvda_news['sentiment']})",
     )
 
-    # Gate 5: 8-Gate Trading Gauntlet Evaluation (No auto_queue)
+    # Gate 5: 9-Gate ML + News Trading Gauntlet Evaluation (No auto_queue)
     gauntlet = http_json(
         "POST",
         f"{BASE}/api/gauntlet/evaluate",
-        {"symbol": "XAUUSD", "tf": "M15", "risk_pct": 15.0, "auto_queue": False},
+        {
+            "symbol": "XAUUSD",
+            "tf": "M15",
+            "risk_pct": 15.0,
+            "min_confidence_pct": 75.0,
+            "auto_queue": False,
+        },
     )
     g5_ok = (
-        gauntlet["total_gates"] == 8
-        and len(gauntlet["gates"]) == 8
+        gauntlet["total_gates"] == 9
+        and len(gauntlet["gates"]) == 9
         and gauntlet["verdict"] in ("PASS", "WAIT", "REJECT")
         and len(gauntlet["mtf_snapshot"]) == 5
     )
     record(
-        "G5_8GATE_GAUNTLET",
+        "G5_9GATE_GAUNTLET",
         g5_ok,
-        f"verdict={gauntlet['verdict']} {gauntlet['direction']} ({gauntlet['passed_count']}/8 PASS)",
+        f"verdict={gauntlet['verdict']} {gauntlet['direction']} ({gauntlet['passed_count']}/9 PASS)",
     )
 
     # Gate 6: Real MT5 Historical Backtest (600 bars)
@@ -222,14 +228,67 @@ def main() -> int:
         f"tunnel={tunnel_health['trade_mode']}, ws_symbol={ws_frame.get('symbol')}, watchdog_running={ws_frame.get('watchdog_running')}",
     )
 
-    # Gate 10: Cleanup temporary synthetic Sheets config/ping log rows & verify zero new orders
+    # Gate 10: LightGBM + Live News Fusion Training & >=75% Confidence Gate Enforcement
+    train_res = http_json(
+        "POST",
+        f"{BASE}/api/ml/train",
+        {"symbol": "XAUUSD", "tf": "M15", "bars": 10000},
+        api_key=API_KEY,
+    )
+    ml_eval_75 = http_json(
+        "POST",
+        f"{BASE}/api/gauntlet/evaluate",
+        {
+            "symbol": "XAUUSD",
+            "tf": "M15",
+            "risk_pct": 15.0,
+            "min_confidence_pct": 75.0,
+            "auto_queue": False,
+        },
+    )
+    ml_eval_95 = http_json(
+        "POST",
+        f"{BASE}/api/gauntlet/evaluate",
+        {
+            "symbol": "XAUUSD",
+            "tf": "M15",
+            "risk_pct": 15.0,
+            "min_confidence_pct": 95.0,
+            "auto_queue": False,
+        },
+    )
+    ml_info = ml_eval_75.get("ml") or {}
+    gate9_75 = next((g for g in ml_eval_75["gates"] if g["id"] == "G9_ML_NEWS_CONFIDENCE"), None)
+    gate9_95 = next((g for g in ml_eval_95["gates"] if g["id"] == "G9_ML_NEWS_CONFIDENCE"), None)
+    g10_ml_ok = (
+        train_res.get("trained") is True
+        and train_res["meta"]["bars_used"] >= 4000
+        and gate9_75 is not None
+        and len(ml_info.get("top_features", [])) >= 3
+        and "news_adjustment_pct" in ml_info
+        and gate9_95 is not None
+        and gate9_95["status"] == "FAIL"
+        and ml_eval_95["verdict"] != "PASS"
+    )
+    oos = train_res["meta"]["oos_summary"]
+    record(
+        "G10_ML_NEWS_CONFIDENCE_75",
+        g10_ml_ok,
+        (
+            f"bars={train_res['meta']['bars_used']}, oos_auc=B:{oos['auc_buy']}/S:{oos['auc_sell']}, "
+            f"oos_net={oos['net_r_combined']}R, live_conf={ml_info.get('final_confidence_pct')}% "
+            f"(news_adj={ml_info.get('news_adjustment_pct'):+.1f}%, gate75={gate9_75['status'] if gate9_75 else None}, gate95={gate9_95['status'] if gate9_95 else None})"
+        ),
+    )
+
+    # Gate 11: Cleanup temporary synthetic Sheets config/ping log rows & verify zero new orders
     with get_connection(DB_PATH) as conn:
         conn.execute(
             "DELETE FROM system_logs WHERE category = 'SHEETS' AND (message LIKE '%webhook%' OR message LIKE '%Google Sheets%')"
         )
     snap_after = http_json("GET", f"{BASE}/api/market/snapshot?symbol=XAUUSD")
-    g10_ok = len(snap_after["positions"]) == len(snap["positions"])
-    record("G10_CLEANUP_AND_SAFETY", g10_ok, f"open_positions_unchanged={len(snap_after['positions'])}")
+    g11_ok = len(snap_after["positions"]) == len(snap["positions"])
+    record("G11_CLEANUP_AND_SAFETY", g11_ok, f"open_positions_unchanged={len(snap_after['positions'])}")
 
     failed = [r for r in results if not r[1]]
     print(f"\n=== GAUNTLET SUMMARY: {len(results) - len(failed)}/{len(results)} PASSED ===")

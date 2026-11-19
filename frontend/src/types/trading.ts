@@ -167,6 +167,53 @@ export interface NewsResponse {
   articles: NewsArticle[];
 }
 
+export interface MLFeatureDriver {
+  feature: string;
+  shap_value: number;
+  value: number;
+  direction: "UP" | "DOWN";
+}
+
+export interface MLReport {
+  model_symbol: string;
+  model_tf: string;
+  trained_at: string;
+  ml_buy_prob_pct: number;
+  ml_sell_prob_pct: number;
+  ml_raw_prob_pct: number;
+  ml_conviction_pct?: number;
+  news_adjustment_pct: number;
+  mtf_bonus_pct: number;
+  final_confidence_pct: number;
+  min_confidence_pct: number;
+  meets_threshold: boolean;
+  top_features: MLFeatureDriver[];
+  oos_summary: {
+    auc_buy: number | null;
+    auc_sell: number | null;
+    win_rate_65_buy_pct: number | null;
+    win_rate_65_sell_pct: number | null;
+    net_r_combined: number;
+  };
+}
+
+export interface MLModelStatus {
+  trained: boolean;
+  symbol: string;
+  tf: string;
+  meta: {
+    symbol: string;
+    tf: string;
+    trained_at: string;
+    bars_requested: number;
+    bars_used: number;
+    barrier_rule: string;
+    buy_metrics: Record<string, unknown>;
+    sell_metrics: Record<string, unknown>;
+    oos_summary: MLReport["oos_summary"];
+  } | null;
+}
+
 export interface GauntletGate {
   id: string;
   label: string;
@@ -189,6 +236,7 @@ export interface GauntletEvaluation {
   quote: QuoteInfo;
   mtf_snapshot: MtfSummaryRow[];
   gates: GauntletGate[];
+  ml?: MLReport | null;
   proposed_order: {
     symbol: string;
     side: OrderSide;
@@ -296,7 +344,9 @@ export interface TradeProposal {
     verdict?: string;
     passed_count?: number;
     total_gates?: number;
+    confidence_pct?: number | null;
     gates?: GauntletGate[];
+    ml?: MLReport | null;
   };
   news?: NewsArticle[];
 }
@@ -351,6 +401,7 @@ export interface WatchdogConfig {
   interval_sec: number;
   timeframe: string;
   risk_pct: number;
+  min_confidence_pct: number;
   auto_propose: boolean;
   cooldown_min: number;
 }
@@ -362,6 +413,8 @@ export interface WatchdogScanItem {
   direction: string;
   passed_count: number;
   total_gates: number;
+  confidence_pct?: number | null;
+  min_confidence_pct?: number;
   evaluated_at: string;
   bid: number;
   sentiment: string;

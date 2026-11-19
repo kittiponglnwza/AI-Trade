@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Brain,
   CheckCircle2,
   ExternalLink,
   FlaskConical,
@@ -11,10 +12,17 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { evaluateGauntlet, fetchBacktest, fetchNews } from "../services/api";
+import {
+  evaluateGauntlet,
+  fetchBacktest,
+  fetchMlStatus,
+  fetchNews,
+  trainMlModel,
+} from "../services/api";
 import type {
   BacktestResult,
   GauntletEvaluation,
+  MLModelStatus,
   NewsResponse,
   Timeframe,
 } from "../types/trading";
@@ -27,11 +35,14 @@ interface GauntletPanelProps {
 
 export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletPanelProps) {
   const [riskPct, setRiskPct] = useState("15");
+  const [minConfPct, setMinConfPct] = useState("75");
   const [gauntlet, setGauntlet] = useState<GauntletEvaluation | null>(null);
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [news, setNews] = useState<NewsResponse | null>(null);
+  const [mlStatus, setMlStatus] = useState<MLModelStatus | null>(null);
 
   const [runningGauntlet, setRunningGauntlet] = useState(false);
+  const [trainingMl, setTrainingMl] = useState(false);
   const [runningBacktest, setRunningBacktest] = useState(false);
   const [loadingNews, setLoadingNews] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -48,17 +59,49 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
       .finally(() => {
         if (active) setLoadingNews(false);
       });
+
+    fetchMlStatus(symbol, timeframe)
+      .then((res) => {
+        if (active) setMlStatus(res);
+      })
+      .catch(() => {});
+
     return () => {
       active = false;
     };
-  }, [symbol]);
+  }, [symbol, timeframe]);
+
+  const handleTrainMl = async () => {
+    setTrainingMl(true);
+    setErrMsg(null);
+    setStatusMsg(null);
+    try {
+      const res = await trainMlModel(symbol, timeframe, 10000);
+      setMlStatus(res);
+      const oos = res.meta?.oos_summary;
+      setStatusMsg(
+        `เทรนโมเดล LightGBM (${res.symbol} ${res.tf}) สำเร็จ! OOS AUC B:${oos?.auc_buy ?? "-"}/S:${oos?.auc_sell ?? "-"} · Net OOS: ${oos?.net_r_combined ?? 0}R`
+      );
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "เทรน ML ไม่สำเร็จ");
+    } finally {
+      setTrainingMl(false);
+    }
+  };
 
   const handleRunGauntlet = async (autoQueue = false) => {
     setRunningGauntlet(true);
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      const res = await evaluateGauntlet(symbol, timeframe, parseFloat(riskPct) || 15, autoQueue);
+      const confGate = parseFloat(minConfPct) || 75;
+      const res = await evaluateGauntlet(
+        symbol,
+        timeframe,
+        parseFloat(riskPct) || 15,
+        autoQueue,
+        confGate
+      );
       setGauntlet(res);
       setNews({
         symbol: res.symbol,
@@ -72,11 +115,14 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
       });
       if (autoQueue && res.queued_proposal) {
         setStatusMsg(
-          `ส่ง Proposal #${res.queued_proposal.id} (${res.queued_proposal.side} ${res.queued_proposal.lots} ${res.symbol}) เข้าคิวรอยืนยันแล้ว`
+          `ส่ง Proposal #${res.queued_proposal.id} (${res.queued_proposal.side} ${res.queued_proposal.lots} ${res.symbol}) เข้าคิวรอยืนยันแล้ว!`
         );
         onProposalQueued();
       } else if (autoQueue && res.verdict !== "PASS") {
-        setStatusMsg(`ยังไม่ส่งเข้าคิว: Verdict คือ ${res.verdict} (ไม่ผ่านครบ 8 ด่านแบบไร้ Hard Fail)`);
+        const curConf = res.ml?.final_confidence_pct?.toFixed(1) ?? "?";
+        setStatusMsg(
+          `ยังไม่แนะนำให้ซื้อ/ขาย: Verdict=${res.verdict} (ML+News Confidence=${curConf}%, ต้อง >= ${confGate}%)`
+        );
       }
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "รัน Gauntlet ไม่สำเร็จ");
@@ -108,6 +154,9 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     }
   };
 
+  const ml = gauntlet?.ml;
+  const oosSummary = ml?.oos_summary ?? mlStatus?.meta?.oos_summary ?? null;
+
   return (
     <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
       <div className="space-y-3 xl:col-span-7">
@@ -117,15 +166,27 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
               <ShieldCheck className="h-4 w-4 text-[#4fc1ff]" />
               <div>
                 <h2 className="text-sm font-semibold text-[#e1e1e1]">
-                  8-Gate Trading Gauntlet ({symbol} · {timeframe})
+                  9-Gate ML + News Gauntlet ({symbol} · {timeframe})
                 </h2>
                 <p className="text-[11px] text-[#9d9d9d]">
-                  ตรวจสอบ 8 ด่านทั้งเทคนิค สเปรด ข่าว และ Margin จริงจาก MT5 ก่อนเสนอออเดอร์
+                  รวม LightGBM + ข่าวสด + MTF — ต้องมั่นใจ ≥ {minConfPct}% ถึงจะแนะนำให้เปิดไม้
                 </p>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#9d9d9d]">Min Conf%</span>
+                <input
+                  type="number"
+                  min="50"
+                  max="95"
+                  step="1"
+                  value={minConfPct}
+                  onChange={(e) => setMinConfPct(e.target.value)}
+                  className="font-mono-num w-14 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-xs text-[#4fc1ff]"
+                />
+              </div>
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-[#9d9d9d]">Risk%</span>
                 <input
@@ -140,12 +201,22 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
               </div>
               <button
                 type="button"
+                disabled={trainingMl}
+                onClick={handleTrainMl}
+                className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#313131] px-2.5 py-1.5 text-xs font-medium text-[#c586c0] hover:bg-[#3c3c3c] disabled:opacity-50"
+                title="เทรนโมเดล LightGBM ใหม่จากแท่งเทียน MT5 6,000 แท่ง"
+              >
+                <Brain className="h-3.5 w-3.5" />
+                {trainingMl ? "Training..." : mlStatus?.trained ? "Retrain ML" : "Train ML"}
+              </button>
+              <button
+                type="button"
                 disabled={runningGauntlet}
                 onClick={() => handleRunGauntlet(false)}
                 className="flex items-center gap-1.5 rounded bg-[#007acc] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1f8ad2] disabled:opacity-50"
               >
                 <Play className="h-3.5 w-3.5" />
-                {runningGauntlet ? "Evaluating..." : "Run 8-Gate Gauntlet"}
+                {runningGauntlet ? "Evaluating..." : "Run 9-Gate"}
               </button>
               <button
                 type="button"
@@ -154,7 +225,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                 className="flex items-center gap-1.5 rounded bg-[#238636] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2ea043] disabled:opacity-50"
               >
                 <Send className="h-3.5 w-3.5" />
-                Queue if Passed
+                Queue if ≥{minConfPct}%
               </button>
             </div>
           </div>
@@ -170,12 +241,147 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
             </div>
           )}
 
+          {ml && (
+            <div className="mt-3 rounded border border-[#007acc]/50 bg-[#1e1e1e] p-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-[#c586c0]" />
+                  <span className="text-xs font-semibold text-[#e1e1e1]">
+                    LightGBM + Live News Confidence
+                  </span>
+                </div>
+                <div className="font-mono-num flex items-center gap-2">
+                  <span className="text-lg font-bold text-[#e1e1e1]">
+                    {ml.final_confidence_pct.toFixed(1)}%
+                  </span>
+                  <span
+                    className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                      ml.meets_threshold
+                        ? "bg-[#3fb950]/20 text-[#3fb950]"
+                        : "bg-[#f14c4c]/20 text-[#f14c4c]"
+                    }`}
+                  >
+                    {ml.meets_threshold
+                      ? `PASS >= ${ml.min_confidence_pct}%`
+                      : `BLOCKED < ${ml.min_confidence_pct}%`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="font-mono-num grid grid-cols-3 gap-2 rounded border border-[#2b2b2b] bg-[#252526] p-2 text-[11px]">
+                <div>
+                  <span className="text-[#9d9d9d]">ML Conviction: </span>
+                  <strong className="text-[#4fc1ff]">
+                    {(ml.ml_conviction_pct ?? ml.ml_raw_prob_pct).toFixed(1)}%
+                  </strong>
+                  <div className="text-[10px] text-[#6e6e6e]">
+                    Raw P(Win): {ml.ml_raw_prob_pct.toFixed(1)}%
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[#9d9d9d]">News Fusion: </span>
+                  <strong
+                    className={
+                      ml.news_adjustment_pct >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                    }
+                  >
+                    {ml.news_adjustment_pct >= 0 ? "+" : ""}
+                    {ml.news_adjustment_pct.toFixed(1)}%
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[#9d9d9d]">MTF Bonus: </span>
+                  <strong
+                    className={ml.mtf_bonus_pct >= 0 ? "text-[#dcdcaa]" : "text-[#f14c4c]"}
+                  >
+                    {ml.mtf_bonus_pct >= 0 ? "+" : ""}
+                    {ml.mtf_bonus_pct.toFixed(1)}%
+                  </strong>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-[11px]">
+                <div>
+                  <div className="font-mono-num mb-1 flex justify-between">
+                    <span className="text-[#3fb950]">P(BUY)</span>
+                    <span className="text-[#e1e1e1]">{ml.ml_buy_prob_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-[#2b2b2b]">
+                    <div
+                      className="h-full bg-[#3fb950]"
+                      style={{ width: `${Math.min(100, ml.ml_buy_prob_pct)}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono-num mb-1 flex justify-between">
+                    <span className="text-[#f14c4c]">P(SELL)</span>
+                    <span className="text-[#e1e1e1]">{ml.ml_sell_prob_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-[#2b2b2b]">
+                    <div
+                      className="h-full bg-[#f14c4c]"
+                      style={{ width: `${Math.min(100, ml.ml_sell_prob_pct)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {ml.top_features.length > 0 && (
+                <div className="border-t border-[#2b2b2b] pt-2">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#9d9d9d]">
+                    Top TreeSHAP Drivers (เหตุผลที่โมเดล LightGBM ให้คะแนน)
+                  </div>
+                  <div className="font-mono-num grid grid-cols-1 gap-1 sm:grid-cols-2 text-[11px]">
+                    {ml.top_features.slice(0, 6).map((f) => (
+                      <div
+                        key={f.feature}
+                        className="flex items-center justify-between rounded bg-[#252526] px-2 py-1"
+                      >
+                        <span className="text-[#cccccc]">{f.feature}</span>
+                        <span
+                          className={
+                            f.shap_value >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                          }
+                        >
+                          {f.shap_value >= 0 ? "+" : ""}
+                          {f.shap_value.toFixed(3)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {oosSummary && (
+            <div className="font-mono-num mt-2 flex flex-wrap items-center justify-between gap-2 rounded border border-[#2b2b2b] bg-[#1e1e1e] px-3 py-2 text-[11px] text-[#9d9d9d]">
+              <span>
+                Walk-Forward Out-of-Sample Proof ({mlStatus?.meta?.bars_used ?? "5,000+"} bars):
+              </span>
+              <span className="text-[#e1e1e1]">
+                AUC B:{oosSummary.auc_buy ?? "-"} / S:{oosSummary.auc_sell ?? "-"} · High-Conf WR B:
+                {oosSummary.win_rate_65_buy_pct ?? "-"}% / S:
+                {oosSummary.win_rate_65_sell_pct ?? "-"}% · Net{" "}
+                <strong
+                  className={
+                    oosSummary.net_r_combined >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                  }
+                >
+                  {oosSummary.net_r_combined >= 0 ? "+" : ""}
+                  {oosSummary.net_r_combined}R
+                </strong>
+              </span>
+            </div>
+          )}
+
           {!gauntlet ? (
             <div className="mt-3 rounded border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-4 py-8 text-center text-xs text-[#9d9d9d]">
-              กด <strong>&ldquo;Run 8-Gate Gauntlet&rdquo;</strong> เพื่อตรวจสอบ {symbol} ครบทั้ง 8 ด่านแบบโปร่งใส
+              กด <strong>&ldquo;Run 9-Gate&rdquo;</strong> เพื่อดูผลประเมินครบทั้ง 9 ด่าน (รวม LightGBM + ข่าวสด + TreeSHAP)
             </div>
           ) : (
-            <div className="mt-3 space-y-3">
+            <div className="mt-3 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3">
                 <div className="flex items-center gap-2">
                   <span
@@ -190,7 +396,8 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                     VERDICT: {gauntlet.verdict} {gauntlet.direction}
                   </span>
                   <span className="font-mono-num text-xs font-semibold text-[#e1e1e1]">
-                    {gauntlet.passed_count}/{gauntlet.total_gates} PASS · {gauntlet.warn_count} WARN · {gauntlet.fail_count} FAIL
+                    {gauntlet.passed_count}/{gauntlet.total_gates} PASS · {gauntlet.warn_count} WARN ·{" "}
+                    {gauntlet.fail_count} FAIL
                   </span>
                 </div>
                 <span className="font-mono-num text-[11px] text-[#6e6e6e]">
@@ -261,7 +468,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
 
           {!backtest ? (
             <div className="mt-3 rounded border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-4 py-6 text-center text-xs text-[#9d9d9d]">
-              กด <strong>&ldquo;Run Backtest (600 Bars)&rdquo;</strong> เพื่อพิสูจน์สถิติย้อนหลังจริงของกลยุทธ์นี้
+              กด <strong>&ldquo;Run Backtest (600 Bars)&rdquo;</strong> เพื่อพิสูจน์สถิติย้อนหลังจริง
             </div>
           ) : (
             <div className="mt-3 space-y-3">
@@ -363,7 +570,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                   Live News & Citations ({symbol})
                 </h2>
                 <p className="text-[11px] text-[#9d9d9d]">
-                  คลิกที่พาดหัวเพื่อเปิดอ่านข่าวต้นฉบับได้ทุกชิ้น
+                  ข่าวเหล่านี้ถูกนำไปคำนวณคะแนน ML + News Fusion โดยตรง
                 </p>
               </div>
             </div>
@@ -403,7 +610,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
             </div>
           )}
 
-          <div className="mt-3 max-h-[650px] space-y-2 overflow-y-auto pr-1">
+          <div className="mt-3 max-h-[680px] space-y-2 overflow-y-auto pr-1">
             {!news || news.articles.length === 0 ? (
               <div className="rounded border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-4 py-8 text-center text-xs text-[#6e6e6e]">
                 {loadingNews ? "Loading live news feeds..." : "ไม่พบข่าวสำหรับสัญลักษณ์นี้"}

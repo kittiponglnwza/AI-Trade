@@ -37,10 +37,12 @@ from app.database import (
     upsert_mt5_deals,
 )
 from app.gauntlet import evaluate_gauntlet, run_historical_backtest
+from app.ml_engine import get_model_status, train_symbol_model
 from app.mt5_service import mt5_service
 from app.news_service import fetch_symbol_news
 from app.schemas import (
     GauntletEvaluateRequest,
+    MLTrainRequest,
     OrderCheckRequest,
     PositionCloseRequest,
     PositionModifyRequest,
@@ -586,14 +588,22 @@ async def post_gauntlet_evaluate(
         verify_api_key(x_api_key)
 
     try:
-        result = await asyncio.to_thread(evaluate_gauntlet, body.symbol, body.tf, body.risk_pct)
+        result = await asyncio.to_thread(
+            evaluate_gauntlet,
+            body.symbol,
+            body.tf,
+            body.risk_pct,
+            body.min_confidence_pct,
+        )
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
 
+    ml_conf = (result.get("ml") or {}).get("final_confidence_pct")
+    conf_tag = f" | Conf {ml_conf:.1f}%" if ml_conf is not None else ""
     add_system_log(
         "SIGNAL" if result["verdict"] == "PASS" else "INFO",
         "GAUNTLET",
-        f"Evaluated {result['symbol']} {result['timeframe']}: {result['verdict']} {result['direction']} ({result['passed_count']}/{result['total_gates']})",
+        f"Evaluated {result['symbol']} {result['timeframe']}: {result['verdict']} {result['direction']} ({result['passed_count']}/{result['total_gates']}{conf_tag})",
         symbol=result["symbol"],
     )
 
@@ -620,7 +630,9 @@ async def post_gauntlet_evaluate(
                     "verdict": result["verdict"],
                     "passed_count": result["passed_count"],
                     "total_gates": result["total_gates"],
+                    "confidence_pct": ml_conf,
                     "gates": result["gates"],
+                    "ml": result.get("ml"),
                 },
                 "news": result["news"],
             }
@@ -634,6 +646,34 @@ async def post_gauntlet_evaluate(
         asyncio.create_task(asyncio.to_thread(sync_proposal_row, queued_proposal))
 
     return {**result, "queued_proposal": queued_proposal}
+
+
+@app.get("/api/ml/status")
+async def get_ml_status_endpoint(
+    symbol: str = Query(default=DEFAULT_SYMBOL),
+    tf: str = Query(default="M15"),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(get_model_status, symbol, tf)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.post("/api/ml/train", dependencies=[Depends(verify_api_key)])
+async def post_ml_train_endpoint(body: MLTrainRequest) -> dict[str, Any]:
+    try:
+        meta = await asyncio.to_thread(train_symbol_model, body.symbol, body.tf, body.bars)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+    oos = meta["oos_summary"]
+    add_system_log(
+        "INFO",
+        "ML",
+        f"Trained LightGBM {meta['symbol']} {meta['tf']} ({meta['bars_used']} bars) | OOS AUC B:{oos['auc_buy']}/S:{oos['auc_sell']} | Net OOS R: {oos['net_r_combined']}",
+        symbol=meta["symbol"],
+    )
+    return {"trained": True, "symbol": meta["symbol"], "tf": meta["tf"], "meta": meta}
 
 
 @app.get("/api/backtest")

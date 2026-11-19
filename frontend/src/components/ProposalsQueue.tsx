@@ -132,6 +132,11 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                         Gauntlet {p.gauntlet.passed_count}/{p.gauntlet.total_gates}
                       </span>
                     ) : null}
+                    {typeof p.gauntlet?.confidence_pct === "number" ? (
+                      <span className="font-mono-num rounded border border-[#c586c0]/40 bg-[#c586c0]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#c586c0]">
+                        Conf {p.gauntlet.confidence_pct.toFixed(1)}%
+                      </span>
+                    ) : null}
                   </div>
                   <span className="font-mono-num text-[11px] text-[#6e6e6e]">#{p.id}</span>
                 </div>

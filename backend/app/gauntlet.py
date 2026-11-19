@@ -8,6 +8,7 @@ from typing import Any
 import MetaTrader5 as mt5
 
 from app.indicators import classify_trend
+from app.ml_engine import predict_with_news
 from app.mt5_service import mt5_service
 from app.news_service import fetch_symbol_news
 
@@ -16,8 +17,13 @@ def _fmt_ts(epoch_sec: int) -> str:
     return datetime.fromtimestamp(int(epoch_sec), tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
-def evaluate_gauntlet(symbol: str = "XAUUSD", tf: str = "M15", risk_pct: float = 15.0) -> dict[str, Any]:
-    """Run an auditable 8-gate technical + news + broker risk evaluation on a symbol."""
+def evaluate_gauntlet(
+    symbol: str = "XAUUSD",
+    tf: str = "M15",
+    risk_pct: float = 15.0,
+    min_confidence_pct: float = 75.0,
+) -> dict[str, Any]:
+    """Run an auditable 9-gate technical + news + ML confidence evaluation on a symbol."""
     tf_u = tf.upper()
     quote = mt5_service.get_quote(symbol)
     resolved = quote["symbol"]
@@ -258,6 +264,44 @@ def evaluate_gauntlet(symbol: str = "XAUUSD", tf: str = "M15", risk_pct: float =
         }
     )
 
+    # G9: LightGBM + Live News Fusion Confidence Gate (>= min_confidence_pct, default 75%)
+    ml_report: dict[str, Any] | None = None
+    try:
+        ml_report = predict_with_news(
+            resolved,
+            tf_u,
+            direction,
+            news,
+            mtf,
+            min_confidence_pct=min_confidence_pct,
+            auto_train=True,
+        )
+        conf = float(ml_report["final_confidence_pct"])
+        if ml_report["meets_threshold"]:
+            g9_status = "PASS"
+        else:
+            g9_status = "FAIL"
+        g9_metric = f"{conf:.1f}% / {min_confidence_pct:.0f}%"
+        g9_detail = (
+            f"Combined {conf:.1f}% vs >= {min_confidence_pct:.0f}% gate "
+            f"(ML Conviction {ml_report['ml_conviction_pct']:.1f}% [Raw P(Win) {ml_report['ml_raw_prob_pct']:.1f}%] "
+            f"+ News {ml_report['news_adjustment_pct']:+.1f}% + MTF {ml_report['mtf_bonus_pct']:+.1f}%)."
+        )
+    except Exception as exc:
+        g9_status = "FAIL"
+        g9_metric = "Model Error"
+        g9_detail = f"ML confidence check unavailable: {exc}"
+
+    gates.append(
+        {
+            "id": "G9_ML_NEWS_CONFIDENCE",
+            "label": f"ML + News >= {min_confidence_pct:.0f}%",
+            "status": g9_status,
+            "metric": g9_metric,
+            "detail": g9_detail,
+        }
+    )
+
     hard_fails = sum(1 for g in gates if g["status"] == "FAIL")
     warns = sum(1 for g in gates if g["status"] == "WARN")
     passed_count = sum(1 for g in gates if g["status"] == "PASS")
@@ -269,9 +313,11 @@ def evaluate_gauntlet(symbol: str = "XAUUSD", tf: str = "M15", risk_pct: float =
     else:
         verdict = "REJECT"
 
+    conf_str = f"{ml_report['final_confidence_pct']:.1f}%" if ml_report else "N/A"
     top_headline = articles[0]["title"] if articles else "No news headlines available"
     rationale = (
-        f"Gauntlet {passed_count}/8 PASS ({warns} warn, {hard_fails} fail) · Verdict: {verdict} {direction} | "
+        f"Gauntlet {passed_count}/{len(gates)} PASS ({warns} warn, {hard_fails} fail) · "
+        f"ML+News Conf {conf_str} (Gate >={min_confidence_pct:.0f}%) · Verdict: {verdict} {direction} | "
         f"MTF B:{len(bull_tfs)}/S:{len(bear_tfs)} | {tf_u} RSI {entry_rsi:.1f} | "
         f"News ({sent}): {top_headline}"
     )
@@ -310,6 +356,7 @@ def evaluate_gauntlet(symbol: str = "XAUUSD", tf: str = "M15", risk_pct: float =
         "quote": quote,
         "mtf_snapshot": mtf,
         "gates": gates,
+        "ml": ml_report,
         "proposed_order": proposed_order,
         "news_summary": {
             "sentiment": news["sentiment"],

@@ -114,10 +114,11 @@ class MarketWatchdog:
                 except Exception as exc:
                     add_system_log("WARN", "SYNC", f"Auto-sync deals warning: {exc}")
 
-                # 2. Scan watchlist symbols through the 8-Gate Gauntlet
+                # 2. Scan watchlist symbols through the 9-Gate ML + News Gauntlet
                 cfg = get_watchdog_config()
                 tf = str(cfg.get("timeframe", "M15")).upper()
                 risk_pct = float(cfg.get("risk_pct", 15.0))
+                min_conf = float(cfg.get("min_confidence_pct", 75.0))
                 auto_propose = bool(cfg.get("auto_propose", True))
                 cooldown_sec = max(60, int(cfg.get("cooldown_min", 30)) * 60)
 
@@ -129,8 +130,12 @@ class MarketWatchdog:
 
                 for sym in symbols:
                     try:
-                        res = await asyncio.to_thread(evaluate_gauntlet, sym, tf, risk_pct)
+                        res = await asyncio.to_thread(
+                            evaluate_gauntlet, sym, tf, risk_pct, min_conf
+                        )
                         resolved = res["symbol"]
+                        ml_info = res.get("ml") or {}
+                        conf_pct = ml_info.get("final_confidence_pct")
                         compact = {
                             "symbol": resolved,
                             "timeframe": res["timeframe"],
@@ -138,6 +143,8 @@ class MarketWatchdog:
                             "direction": res["direction"],
                             "passed_count": res["passed_count"],
                             "total_gates": res["total_gates"],
+                            "confidence_pct": conf_pct,
+                            "min_confidence_pct": min_conf,
                             "evaluated_at": res["evaluated_at"],
                             "bid": res["quote"]["bid"],
                             "sentiment": res["news_summary"]["sentiment"],
@@ -145,17 +152,18 @@ class MarketWatchdog:
                         self.last_results[resolved] = compact
                         summary_items.append(compact)
 
-                        top_title = res["news"][0]["title"][:75] if res["news"] else "No live news"
+                        top_title = res["news"][0]["title"][:70] if res["news"] else "No live news"
+                        conf_txt = f"Conf {conf_pct:.1f}%/{min_conf:.0f}%" if conf_pct is not None else "Conf N/A"
                         msg = (
                             f"{resolved} {tf} | {res['verdict']} {res['direction']} | "
-                            f"Gauntlet {res['passed_count']}/{res['total_gates']} | "
+                            f"Gauntlet {res['passed_count']}/{res['total_gates']} | {conf_txt} | "
                             f"Bid {res['quote']['bid']} | News({res['news_summary']['sentiment']}): {top_title}"
                         )
                         log_level = "SIGNAL" if res["verdict"] == "PASS" else "INFO"
                         log_entry = add_system_log(log_level, "WATCHDOG", msg, symbol=resolved, details=compact)
                         await asyncio.to_thread(sync_watchdog_log_row, log_entry)
 
-                        # 3. Auto-queue proposal ONLY if 8/8 hard-fail-free PASS and within cooldown/limits
+                        # 3. Auto-queue proposal ONLY if 9/9 hard-fail-free PASS (>=75% ML+News Conf)
                         if (
                             auto_propose
                             and res["verdict"] == "PASS"
@@ -187,7 +195,9 @@ class MarketWatchdog:
                                             "verdict": res["verdict"],
                                             "passed_count": res["passed_count"],
                                             "total_gates": res["total_gates"],
+                                            "confidence_pct": conf_pct,
                                             "gates": res["gates"],
+                                            "ml": ml_info,
                                         },
                                         "news": res["news"],
                                     }
