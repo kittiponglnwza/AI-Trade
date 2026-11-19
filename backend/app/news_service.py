@@ -70,6 +70,16 @@ BEARISH_TERMS = (
     "losses",
 )
 
+BULLISH_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (term, re.compile(rf"\b{re.escape(term)}(?:s|es|ed|ing)?\b", re.I))
+    for term in BULLISH_TERMS
+]
+
+BEARISH_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (term, re.compile(rf"\b{re.escape(term)}(?:s|es|ed|ing)?\b", re.I))
+    for term in BEARISH_TERMS
+]
+
 INDEX_TICKER_MAP = {
     "US500": ("^GSPC", "S&P 500 stock market"),
     "SP500": ("^GSPC", "S&P 500 stock market"),
@@ -137,9 +147,9 @@ def _feeds_for_symbol(symbol: str) -> list[tuple[str, str]]:
 
 
 def _score_article(title: str, summary: str) -> tuple[str, float, list[str], list[str]]:
-    text = f"{title} {summary}".lower()
-    bull_hits = [w for w in BULLISH_TERMS if w in text]
-    bear_hits = [w for w in BEARISH_TERMS if w in text]
+    text = f"{title} {summary}"
+    bull_hits = [term for term, pat in BULLISH_PATTERNS if pat.search(text)]
+    bear_hits = [term for term, pat in BEARISH_PATTERNS if pat.search(text)]
     score = float(len(bull_hits) - len(bear_hits))
     if score > 0:
         tag = "BULLISH"

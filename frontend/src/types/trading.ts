@@ -125,12 +125,28 @@ export interface CandlesResponse {
   candles: CandlePoint[];
 }
 
+export interface PortfolioRiskStatus {
+  equity: number;
+  daily_realized_pnl_usd: number;
+  floating_pnl_usd: number;
+  daily_total_pnl_usd: number;
+  daily_total_pnl_pct: number;
+  open_positions_count: number;
+  open_risk_usd: number;
+  open_risk_pct: number;
+  max_daily_loss_pct?: number;
+  max_open_risk_pct?: number;
+  proposal_ttl_min?: number;
+  max_drift_atr?: number;
+}
+
 export interface MarketSnapshot {
   account: AccountSummary;
   quote: QuoteInfo;
   positions: OpenPosition[];
   orders: PendingOrder[];
   mtf: MtfSummaryRow[];
+  risk_status?: PortfolioRiskStatus | null;
 }
 
 export interface OrderCheckResult {
@@ -412,8 +428,17 @@ export interface WatchdogConfig {
   cooldown_min: number;
   autopilot_enabled?: boolean;
   autopilot_min_confidence_pct?: number;
+  autopilot_sizing_mode?: "FIXED_LOT" | "RISK_PCT";
   autopilot_fixed_lots?: number;
+  autopilot_risk_pct?: number;
   autopilot_max_open_positions?: number;
+  proposal_ttl_min?: number;
+  max_drift_atr?: number;
+  max_daily_loss_pct?: number;
+  max_open_risk_pct?: number;
+  sl_atr_mult?: number;
+  tp_atr_mult?: number;
+  min_rr_ratio?: number;
 }
 
 export interface PositionManagerConfig {

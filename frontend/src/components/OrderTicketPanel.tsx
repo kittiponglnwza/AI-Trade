@@ -26,11 +26,13 @@ export function OrderTicketPanel({
 }: OrderTicketPanelProps) {
   const [side, setSide] = useState<OrderSide>("SELL");
   const [sizingMode, setSizingMode] = useState<"risk" | "lots">("risk");
-  const [riskPct, setRiskPct] = useState("15");
-  const [lots, setLots] = useState("0.30");
+  const [riskPct, setRiskPct] = useState("2");
+  const [lots, setLots] = useState("0.01");
   const [entryPrice, setEntryPrice] = useState("");
   const [sl, setSl] = useState("");
   const [tp, setTp] = useState("");
+  const [slAtrMult, setSlAtrMult] = useState("1.5");
+  const [tpAtrMult, setTpAtrMult] = useState("2.5");
   const [rationale, setRationale] = useState("");
 
   const [checking, setChecking] = useState(false);
@@ -68,9 +70,13 @@ export function OrderTicketPanel({
         ? quote.ask
         : quote.bid;
     const d = quote.digits;
+    // Scale baseline ATR unit dynamically by price level & stops_level so it works on FX, Gold, and Stocks
+    const baseUnit = Math.max(ref * 0.0032, quote.stops_level_price * 2.0, quote.point * 150);
+    const slM = Math.max(0.3, parseFloat(slAtrMult) || 1.5);
+    const tpM = Math.max(0.5, parseFloat(tpAtrMult) || 2.5);
     if (!isPending) setEntryPrice("");
-    setSl((isBuy ? ref - 12 : ref + 12).toFixed(d));
-    setTp((isBuy ? ref + 28 : ref - 28).toFixed(d));
+    setSl((isBuy ? ref - baseUnit * slM : ref + baseUnit * slM).toFixed(d));
+    setTp((isBuy ? ref + baseUnit * tpM : ref - baseUnit * tpM).toFixed(d));
     setCheckResult(null);
     setFeedback(null);
   };
@@ -142,7 +148,7 @@ export function OrderTicketPanel({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between border-b border-[#2b2b2b] pb-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] pb-2.5">
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-wide text-[#e1e1e1]">
             Manual Order Planner
@@ -151,17 +157,40 @@ export function OrderTicketPanel({
             ตรวจสอบ Lot / Margin ก่อนส่งเข้าคิวยืนยัน
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleAutoLevels}
-          className="rounded border border-[#3c3c3c] bg-[#313131] px-2.5 py-1 text-[11px] font-medium text-[#dcdcaa] hover:bg-[#3c3c3c]"
-        >
-          เติม ±$12/$28
-        </button>
+        <div className="flex items-center gap-1 text-[11px]">
+          <input
+            type="number"
+            step="0.1"
+            min="0.3"
+            max="10"
+            value={slAtrMult}
+            onChange={(e) => setSlAtrMult(e.target.value)}
+            className="font-mono-num w-11 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-center text-[11px] text-[#f48771]"
+            title="ตัวคูณระยะ SL (ATR Multiplier)"
+          />
+          <span className="text-[#6e6e6e]">/</span>
+          <input
+            type="number"
+            step="0.1"
+            min="0.5"
+            max="15"
+            value={tpAtrMult}
+            onChange={(e) => setTpAtrMult(e.target.value)}
+            className="font-mono-num w-11 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-center text-[11px] text-[#3fb950]"
+            title="ตัวคูณระยะ TP (ATR Multiplier)"
+          />
+          <button
+            type="button"
+            onClick={handleAutoLevels}
+            className="rounded border border-[#3c3c3c] bg-[#313131] px-2 py-0.5 text-[11px] font-medium text-[#dcdcaa] hover:bg-[#3c3c3c]"
+          >
+            Auto SL/TP
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-1.5">
-        {(["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT"] as OrderSide[]).map((s) => {
+      <div className="grid grid-cols-3 gap-1.5">
+        {(["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"] as OrderSide[]).map((s) => {
           const isBuy = s.startsWith("BUY");
           const active = side === s;
           return (
@@ -173,7 +202,7 @@ export function OrderTicketPanel({
                 setCheckResult(null);
                 setFeedback(null);
               }}
-              className={`rounded border px-2.5 py-1.5 text-xs font-bold transition ${
+              className={`rounded border px-2 py-1.5 text-[11px] font-bold transition ${
                 active
                   ? isBuy
                     ? "border-[#3fb950] bg-[#3fb950]/15 text-[#3fb950]"
@@ -195,7 +224,7 @@ export function OrderTicketPanel({
             sizingMode === "risk" ? "bg-[#007acc] text-white" : "text-[#9d9d9d] hover:text-[#e1e1e1]"
           }`}
         >
-          ตาม Risk % (10-20%)
+          คำนวณตาม Risk %
         </button>
         <button
           type="button"
@@ -212,8 +241,8 @@ export function OrderTicketPanel({
         <div>
           <div className="flex items-center justify-between text-xs text-[#cccccc]">
             <span>Risk % of Equity</span>
-            <div className="flex gap-1">
-              {["10", "15", "20"].map((pct) => (
+            <div className="flex flex-wrap gap-1">
+              {["0.5", "1", "2", "5", "10"].map((pct) => (
                 <button
                   key={pct}
                   type="button"
@@ -231,8 +260,8 @@ export function OrderTicketPanel({
           </div>
           <input
             type="number"
-            step="0.5"
-            min="0.5"
+            step="0.1"
+            min="0.1"
             max="50"
             value={riskPct}
             onChange={(e) => setRiskPct(e.target.value)}

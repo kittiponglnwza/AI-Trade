@@ -191,9 +191,13 @@ export function WatchlistBar({
                 className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2.5 py-1.5 text-xs text-[#cccccc]"
               >
                 <option value="all">All Categories</option>
-                <option value="Nasdaq">US Stocks / Nasdaq</option>
-                <option value="Metals">Metals (Gold/Silver)</option>
                 <option value="Forex">Forex</option>
+                <option value="Metals">Metals (Gold/Silver)</option>
+                <option value="Nasdaq">Nasdaq (US Stocks)</option>
+                <option value="NYSE">NYSE (US Stocks)</option>
+                <option value="Index">Indices (US500/USTEC)</option>
+                <option value="Crypto">Crypto</option>
+                <option value="Energ">Energy / Oil</option>
               </select>
             </div>
 

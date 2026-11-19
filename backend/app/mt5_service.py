@@ -382,6 +382,48 @@ class MT5BridgeService:
             "candles": candles,
         }
 
+    def get_last_bar_fast(self, symbol: str = DEFAULT_SYMBOL, tf: str = "M15") -> dict[str, Any] | None:
+        """Fetch only the latest bar directly from MT5 in <1ms without 450-bar Pandas recomputation."""
+        tf_upper = tf.upper()
+        if tf_upper not in TIMEFRAME_MAP:
+            return None
+        with self._lock:
+            resolved = self.resolve_symbol(symbol)
+            sym = mt5.symbol_info(resolved)
+            digits = int(sym.digits) if sym else 2
+            rates = mt5.copy_rates_from_pos(resolved, TIMEFRAME_MAP[tf_upper], 0, 2)
+            if rates is None or len(rates) == 0:
+                return None
+            r = rates[-1]
+            return {
+                "time": int(r["time"]),
+                "open": round(float(r["open"]), digits),
+                "high": round(float(r["high"]), digits),
+                "low": round(float(r["low"]), digits),
+                "close": round(float(r["close"]), digits),
+                "volume": int(r["tick_volume"]),
+                "ema20": None,
+                "ema50": None,
+                "ema200": None,
+                "rsi14": None,
+                "atr14": None,
+            }
+
+    def get_reference_server_epoch(self) -> int:
+        """Resolve a live 24/5 FX/Metal reference server clock across broker suffixes."""
+        with self._lock:
+            self.ensure_connected()
+            best = 0
+            for candidate in ("XAUUSD", "EURUSD", "USDJPY", "GBPUSD"):
+                try:
+                    resolved = self.resolve_symbol(candidate)
+                    t = mt5.symbol_info_tick(resolved)
+                    if t is not None and int(t.time) > best:
+                        best = int(t.time)
+                except Exception:
+                    continue
+            return best
+
     def get_mtf_summary(self, symbol: str = DEFAULT_SYMBOL) -> list[dict[str, Any]]:
         """Summarize D1, H4, H1, M15, M5 trend, EMA alignment, RSI, and ATR."""
         with self._lock:
@@ -739,56 +781,178 @@ class MT5BridgeService:
         ticket: int,
         sl: float | None = None,
         tp: float | None = None,
+        price_open: float | None = None,
         allow_real: bool = False,
     ) -> dict[str, Any]:
         with self._lock:
             self._guard_execution_allowed(allow_real)
             positions = mt5.positions_get(ticket=ticket)
-            if not positions:
-                raise ValueError(f"Open position #{ticket} not found.")
-            pos = positions[0]
-            sym = mt5.symbol_info(pos.symbol)
-            tick = self._wait_for_tick(pos.symbol, timeout=1.5)
-            if sym is None or tick is None:
-                raise RuntimeError(f"Cannot load symbol/tick for {pos.symbol}.")
+            if positions:
+                pos = positions[0]
+                sym = mt5.symbol_info(pos.symbol)
+                tick = self._wait_for_tick(pos.symbol, timeout=1.5)
+                if sym is None or tick is None:
+                    raise RuntimeError(f"Cannot load symbol/tick for {pos.symbol}.")
 
-            new_sl = round(float(sl), int(sym.digits)) if sl is not None else float(pos.sl)
-            new_tp = round(float(tp), int(sym.digits)) if tp is not None else float(pos.tp)
-            side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
-            cur_ref = float(tick.bid if side == "BUY" else tick.ask)
-            self._validate_sl_tp(
-                side,
-                cur_ref,
-                new_sl if new_sl > 0 else None,
-                new_tp if new_tp > 0 else None,
-                sym,
-                tick,
-            )
+                new_sl = round(float(sl), int(sym.digits)) if sl is not None else float(pos.sl)
+                new_tp = round(float(tp), int(sym.digits)) if tp is not None else float(pos.tp)
+                side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                cur_ref = float(tick.bid if side == "BUY" else tick.ask)
+                self._validate_sl_tp(
+                    side,
+                    cur_ref,
+                    new_sl if new_sl > 0 else None,
+                    new_tp if new_tp > 0 else None,
+                    sym,
+                    tick,
+                )
 
-            request = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "symbol": pos.symbol,
-                "position": int(pos.ticket),
-                "sl": new_sl,
-                "tp": new_tp,
-            }
-            check = mt5.order_check(request)
-            if check is None or check.retcode != 0:
-                msg = check.comment if check is not None else str(mt5.last_error())
-                raise RuntimeError(f"modify order_check failed: {msg}")
+                request = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "symbol": pos.symbol,
+                    "position": int(pos.ticket),
+                    "sl": new_sl,
+                    "tp": new_tp,
+                }
+                check = mt5.order_check(request)
+                if check is None or check.retcode != 0:
+                    msg = check.comment if check is not None else str(mt5.last_error())
+                    raise RuntimeError(f"modify order_check failed: {msg}")
 
-            result = mt5.order_send(request)
-            if result is None:
-                raise RuntimeError(f"mt5.order_send returned None: {mt5.last_error()}")
+                result = mt5.order_send(request)
+                if result is None:
+                    raise RuntimeError(f"mt5.order_send returned None: {mt5.last_error()}")
+
+                return {
+                    "ticket": int(pos.ticket),
+                    "symbol": str(pos.symbol),
+                    "sl": new_sl,
+                    "tp": new_tp,
+                    "success": result.retcode == mt5.TRADE_RETCODE_DONE,
+                    "retcode": int(result.retcode),
+                    "comment": str(result.comment),
+                }
+
+            orders = mt5.orders_get(ticket=ticket)
+            if orders:
+                ord_item = orders[0]
+                sym = mt5.symbol_info(ord_item.symbol)
+                if sym is None:
+                    raise RuntimeError(f"Cannot load symbol for {ord_item.symbol}.")
+                new_price = round(float(price_open), int(sym.digits)) if price_open is not None and price_open > 0 else float(ord_item.price_open)
+                new_sl = round(float(sl), int(sym.digits)) if sl is not None else float(ord_item.sl)
+                new_tp = round(float(tp), int(sym.digits)) if tp is not None else float(ord_item.tp)
+                request = {
+                    "action": mt5.TRADE_ACTION_MODIFY,
+                    "order": int(ord_item.ticket),
+                    "symbol": ord_item.symbol,
+                    "price": new_price,
+                    "sl": new_sl,
+                    "tp": new_tp,
+                    "type_time": int(ord_item.type_time),
+                }
+                result = mt5.order_send(request)
+                if result is None:
+                    raise RuntimeError(f"mt5.order_send returned None: {mt5.last_error()}")
+                return {
+                    "ticket": int(ord_item.ticket),
+                    "symbol": str(ord_item.symbol),
+                    "price_open": new_price,
+                    "sl": new_sl,
+                    "tp": new_tp,
+                    "success": result.retcode == mt5.TRADE_RETCODE_DONE,
+                    "retcode": int(result.retcode),
+                    "comment": str(result.comment),
+                }
+
+            raise ValueError(f"Open position or pending order #{ticket} not found.")
+
+    def panic_close_all(self, allow_real: bool = False) -> dict[str, Any]:
+        """Emergency 1-Click Kill-Switch: close all open positions and cancel all pending orders."""
+        with self._lock:
+            self._guard_execution_allowed(allow_real)
+            positions = mt5.positions_get() or []
+            orders = mt5.orders_get() or []
+            closed_positions: list[dict[str, Any]] = []
+            cancelled_orders: list[dict[str, Any]] = []
+            errors: list[str] = []
+
+            for pos in positions:
+                try:
+                    res = self.close_position(int(pos.ticket), None, 50, allow_real=allow_real)
+                    closed_positions.append(res)
+                except Exception as exc:
+                    errors.append(f"Pos #{pos.ticket}: {exc}")
+
+            for ord_item in orders:
+                try:
+                    res = self.close_position(int(ord_item.ticket), None, 50, allow_real=allow_real)
+                    cancelled_orders.append(res)
+                except Exception as exc:
+                    errors.append(f"Ord #{ord_item.ticket}: {exc}")
 
             return {
-                "ticket": int(pos.ticket),
-                "symbol": str(pos.symbol),
-                "sl": new_sl,
-                "tp": new_tp,
-                "success": result.retcode == mt5.TRADE_RETCODE_DONE,
-                "retcode": int(result.retcode),
-                "comment": str(result.comment),
+                "closed_positions_count": len(closed_positions),
+                "cancelled_orders_count": len(cancelled_orders),
+                "closed_positions": closed_positions,
+                "cancelled_orders": cancelled_orders,
+                "errors": errors,
+            }
+
+    def get_portfolio_risk_status(self) -> dict[str, Any]:
+        """Compute today's realized + floating PnL % and total combined open risk % across positions."""
+        with self._lock:
+            self.ensure_connected()
+            acc = mt5.account_info()
+            if acc is None:
+                raise RuntimeError("Failed to read MT5 account info.")
+            equity = float(acc.equity) if acc.equity > 0 else float(acc.balance or 1.0)
+            floating_pnl = float(acc.profit)
+
+            # Calculate today's realized closed PnL
+            now_utc = datetime.now(timezone.utc)
+            start_of_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            deals = mt5.history_deals_get(start_of_day, now_utc + timedelta(hours=6)) or []
+            daily_realized = 0.0
+            for d in deals:
+                if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY, mt5.DEAL_ENTRY_INOUT):
+                    daily_realized += float(d.profit) + float(d.commission) + float(d.swap)
+
+            daily_total_pnl = round(daily_realized + floating_pnl, 2)
+            daily_total_pnl_pct = round((daily_total_pnl / equity) * 100.0, 2) if equity > 0 else 0.0
+
+            # Calculate total open risk across all open positions
+            positions = mt5.positions_get() or []
+            open_risk_usd = 0.0
+            for pos in positions:
+                is_buy = pos.type == mt5.POSITION_TYPE_BUY
+                order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+                if pos.sl and pos.sl > 0:
+                    # If SL is already locked in profit (BE or trailing), open downside risk is 0
+                    if (is_buy and pos.sl >= pos.price_open) or (not is_buy and pos.sl <= pos.price_open):
+                        continue
+                    prof = mt5.order_calc_profit(order_type, pos.symbol, float(pos.volume), float(pos.price_open), float(pos.sl))
+                    if prof is not None and prof < 0:
+                        open_risk_usd += abs(float(prof))
+                else:
+                    # Fallback 1% price move risk estimate if no SL is set
+                    fallback_sl = float(pos.price_open) * (0.99 if is_buy else 1.01)
+                    prof = mt5.order_calc_profit(order_type, pos.symbol, float(pos.volume), float(pos.price_open), fallback_sl)
+                    if prof is not None:
+                        open_risk_usd += abs(float(prof))
+
+            open_risk_usd = round(open_risk_usd, 2)
+            open_risk_pct = round((open_risk_usd / equity) * 100.0, 2) if equity > 0 else 0.0
+
+            return {
+                "equity": round(equity, 2),
+                "daily_realized_pnl_usd": round(daily_realized, 2),
+                "floating_pnl_usd": round(floating_pnl, 2),
+                "daily_total_pnl_usd": daily_total_pnl,
+                "daily_total_pnl_pct": daily_total_pnl_pct,
+                "open_positions_count": len(positions),
+                "open_risk_usd": open_risk_usd,
+                "open_risk_pct": open_risk_pct,
             }
 
     def close_position(
@@ -871,6 +1035,7 @@ class MT5BridgeService:
         """Reconstruct closed round-trip trades from MT5 deal history grouped by position_id."""
         with self._lock:
             self.ensure_connected()
+            open_pos_ids = {int(p.ticket) for p in (mt5.positions_get() or [])}
             now_utc = datetime.now(timezone.utc)
             date_from = now_utc - timedelta(days=days)
             date_to = now_utc + timedelta(days=1)
@@ -885,6 +1050,9 @@ class MT5BridgeService:
 
         closed: list[dict[str, Any]] = []
         for pos_id, pos_deals in by_position.items():
+            # Skip positions that are still open (e.g. after a 50% Partial Close)
+            if pos_id in open_pos_ids:
+                continue
             pos_deals.sort(key=lambda item: (int(item.time), int(item.ticket)))
             in_deals = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_IN]
             out_deals = [
@@ -977,7 +1145,7 @@ class MT5BridgeService:
                 if s.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
                     continue
                 root_cat = s.path.split("\\")[0] if s.path else "Other"
-                if cat_filter and cat_filter != "all" and root_cat.lower() != cat_filter:
+                if cat_filter and cat_filter != "all" and cat_filter not in root_cat.lower():
                     continue
 
                 name_u = s.name.upper()
@@ -1017,8 +1185,8 @@ class MT5BridgeService:
         """Fetch fast live quotes, D1 % change, and market-open status for a watchlist."""
         with self._lock:
             self.ensure_connected()
-            ref_tick = mt5.symbol_info_tick("XAUUSD")
-            ref_epoch = int(ref_tick.time) if ref_tick and ref_tick.time > 0 else 0
+            ref_epoch = self.get_reference_server_epoch()
+            is_weekend = datetime.now(timezone.utc).weekday() in (5, 6)
 
             out: list[dict[str, Any]] = []
             for raw_sym in symbols:
@@ -1034,7 +1202,7 @@ class MT5BridgeService:
                             change_pct = round(((ref_close - d1_open) / d1_open) * 100.0, 2)
 
                     tick_age = abs(ref_epoch - quote["tick_epoch"]) if ref_epoch > 0 and quote["tick_epoch"] > 0 else 0
-                    market_open = quote["tick_epoch"] > 0 and (ref_epoch == 0 or tick_age < 900)
+                    market_open = (not is_weekend) and quote["tick_epoch"] > 0 and (ref_epoch == 0 or tick_age < 900)
 
                     out.append(
                         {

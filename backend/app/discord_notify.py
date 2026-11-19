@@ -237,7 +237,7 @@ def notify_discord_execution_result(proposal: dict[str, Any], action: str, detai
 def test_discord_connection(webhook_url: str | None = None, public_base_url: str | None = None) -> dict[str, Any]:
     """Send a test embed to verify the user's Discord Webhook URL."""
     cfg = get_discord_config()
-    base = (public_base_url or cfg.get("public_base_url") or "https://mod-brokers-invite-thus.trycloudflare.com").strip()
+    base = (public_base_url or cfg.get("public_base_url") or "http://localhost:8000").strip()
     embed = {
         "title": "⚡ เชื่อมต่อ MT5 AI Trading Desk เข้ากับ Discord สำเร็จ!",
         "description": (

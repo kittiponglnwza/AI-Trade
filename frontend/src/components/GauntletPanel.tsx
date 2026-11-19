@@ -34,8 +34,13 @@ interface GauntletPanelProps {
 }
 
 export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletPanelProps) {
-  const [riskPct, setRiskPct] = useState("15");
+  const [riskPct, setRiskPct] = useState("2");
   const [minConfPct, setMinConfPct] = useState("75");
+  const [slAtrMult, setSlAtrMult] = useState("1.5");
+  const [tpAtrMult, setTpAtrMult] = useState("2.5");
+  const [minRrRatio, setMinRrRatio] = useState("1.5");
+  const [trainBars, setTrainBars] = useState("10000");
+  const [btBars, setBtBars] = useState("600");
   const [gauntlet, setGauntlet] = useState<GauntletEvaluation | null>(null);
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [news, setNews] = useState<NewsResponse | null>(null);
@@ -76,11 +81,12 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      const res = await trainMlModel(symbol, timeframe, 10000);
+      const barsNum = Math.min(12000, Math.max(1000, parseInt(trainBars, 10) || 10000));
+      const res = await trainMlModel(symbol, timeframe, barsNum);
       setMlStatus(res);
       const oos = res.meta?.oos_summary;
       setStatusMsg(
-        `เทรนโมเดล LightGBM (${res.symbol} ${res.tf}) สำเร็จ! OOS AUC B:${oos?.auc_buy ?? "-"}/S:${oos?.auc_sell ?? "-"} · Net OOS: ${oos?.net_r_combined ?? 0}R`
+        `เทรนโมเดล LightGBM (${res.symbol} ${res.tf} · ${barsNum} แท่ง) สำเร็จ! OOS AUC B:${oos?.auc_buy ?? "-"}/S:${oos?.auc_sell ?? "-"} · Net OOS: ${oos?.net_r_combined ?? 0}R`
       );
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "เทรน ML ไม่สำเร็จ");
@@ -95,12 +101,18 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     setStatusMsg(null);
     try {
       const confGate = parseFloat(minConfPct) || 75;
+      const slM = Math.max(0.4, parseFloat(slAtrMult) || 1.5);
+      const tpM = Math.max(0.5, parseFloat(tpAtrMult) || 2.5);
+      const rrM = Math.max(0.8, parseFloat(minRrRatio) || 1.5);
       const res = await evaluateGauntlet(
         symbol,
         timeframe,
-        parseFloat(riskPct) || 15,
+        parseFloat(riskPct) || 2,
         autoQueue,
-        confGate
+        confGate,
+        slM,
+        tpM,
+        rrM
       );
       setGauntlet(res);
       setNews({
@@ -135,7 +147,10 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     setRunningBacktest(true);
     setErrMsg(null);
     try {
-      const res = await fetchBacktest(symbol, timeframe, 600);
+      const barsNum = Math.min(1500, Math.max(120, parseInt(btBars, 10) || 600));
+      const slM = Math.max(0.4, parseFloat(slAtrMult) || 1.5);
+      const tpM = Math.max(0.5, parseFloat(tpAtrMult) || 2.5);
+      const res = await fetchBacktest(symbol, timeframe, barsNum, slM, tpM);
       setBacktest(res);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "รัน Backtest ไม่สำเร็จ");
@@ -181,22 +196,69 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                   type="number"
                   min="50"
                   max="95"
-                  step="1"
+                  step="0.5"
                   value={minConfPct}
                   onChange={(e) => setMinConfPct(e.target.value)}
-                  className="font-mono-num w-14 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-xs text-[#4fc1ff]"
+                  className="font-mono-num w-14 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#4fc1ff]"
                 />
               </div>
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-[#9d9d9d]">Risk%</span>
                 <input
                   type="number"
-                  min="1"
-                  max="40"
-                  step="1"
+                  min="0.1"
+                  max="50"
+                  step="0.1"
                   value={riskPct}
                   onChange={(e) => setRiskPct(e.target.value)}
-                  className="font-mono-num w-14 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-xs text-[#e1e1e1]"
+                  className="font-mono-num w-14 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#e1e1e1]"
+                />
+              </div>
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#9d9d9d]">SL/TP×ATR</span>
+                <input
+                  type="number"
+                  min="0.4"
+                  max="6"
+                  step="0.1"
+                  value={slAtrMult}
+                  onChange={(e) => setSlAtrMult(e.target.value)}
+                  className="font-mono-num w-12 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#f48771]"
+                  title="SL × ATR Multiplier"
+                />
+                <input
+                  type="number"
+                  min="0.5"
+                  max="10"
+                  step="0.1"
+                  value={tpAtrMult}
+                  onChange={(e) => setTpAtrMult(e.target.value)}
+                  className="font-mono-num w-12 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#3fb950]"
+                  title="TP × ATR Multiplier"
+                />
+              </div>
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#9d9d9d]">Min R:R</span>
+                <input
+                  type="number"
+                  min="0.8"
+                  max="6"
+                  step="0.1"
+                  value={minRrRatio}
+                  onChange={(e) => setMinRrRatio(e.target.value)}
+                  className="font-mono-num w-12 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#dcdcaa]"
+                />
+              </div>
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#9d9d9d]">ML Bars</span>
+                <input
+                  type="number"
+                  min="1000"
+                  max="12000"
+                  step="500"
+                  value={trainBars}
+                  onChange={(e) => setTrainBars(e.target.value)}
+                  className="font-mono-num w-16 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-xs text-[#c586c0]"
                 />
               </div>
               <button
@@ -204,7 +266,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                 disabled={trainingMl}
                 onClick={handleTrainMl}
                 className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#313131] px-2.5 py-1.5 text-xs font-medium text-[#c586c0] hover:bg-[#3c3c3c] disabled:opacity-50"
-                title="เทรนโมเดล LightGBM ใหม่จากแท่งเทียน MT5 6,000 แท่ง"
+                title={`เทรนโมเดล LightGBM ใหม่จากแท่งเทียน MT5 ${trainBars} แท่ง`}
               >
                 <Brain className="h-3.5 w-3.5" />
                 {trainingMl ? "Training..." : mlStatus?.trained ? "Retrain ML" : "Train ML"}
@@ -455,15 +517,29 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              disabled={runningBacktest}
-              onClick={handleRunBacktest}
-              className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#313131] px-3 py-1.5 text-xs font-semibold text-[#e1e1e1] hover:bg-[#3c3c3c] disabled:opacity-50"
-            >
-              <Play className="h-3.5 w-3.5 text-[#c586c0]" />
-              {runningBacktest ? "Backtesting..." : "Run Backtest (600 Bars)"}
-            </button>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#9d9d9d]">Bars</span>
+                <input
+                  type="number"
+                  min="120"
+                  max="1500"
+                  step="60"
+                  value={btBars}
+                  onChange={(e) => setBtBars(e.target.value)}
+                  className="font-mono-num w-16 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-xs text-[#e1e1e1]"
+                />
+              </div>
+              <button
+                type="button"
+                disabled={runningBacktest}
+                onClick={handleRunBacktest}
+                className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#313131] px-3 py-1.5 text-xs font-semibold text-[#e1e1e1] hover:bg-[#3c3c3c] disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5 text-[#c586c0]" />
+                {runningBacktest ? "Backtesting..." : `Run Backtest (${btBars} Bars)`}
+              </button>
+            </div>
           </div>
 
           {!backtest ? (

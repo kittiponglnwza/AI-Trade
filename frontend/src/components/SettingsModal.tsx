@@ -64,9 +64,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
 
   const [discordEnabled, setDiscordEnabled] = useState(false);
   const [discordWebhookUrl, setDiscordWebhookUrl] = useState("");
-  const [discordPublicUrl, setDiscordPublicUrl] = useState(
-    initial.baseUrl || "https://mod-brokers-invite-thus.trycloudflare.com"
-  );
+  const [discordPublicUrl, setDiscordPublicUrl] = useState(initial.baseUrl || "");
   const [notifyProposals, setNotifyProposals] = useState(true);
   const [notifyAutopilot, setNotifyAutopilot] = useState(true);
   const [notifyPosMgr, setNotifyPosMgr] = useState(true);
@@ -91,9 +89,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
       .then((cfg) => {
         setDiscordEnabled(Boolean(cfg.enabled));
         setDiscordWebhookUrl(cfg.webhook_url || "");
-        setDiscordPublicUrl(
-          cfg.public_base_url || initial.baseUrl || "https://mod-brokers-invite-thus.trycloudflare.com"
-        );
+        setDiscordPublicUrl(cfg.public_base_url || initial.baseUrl || "");
         setNotifyProposals(cfg.notify_proposals ?? true);
         setNotifyAutopilot(cfg.notify_autopilot ?? true);
         setNotifyPosMgr(cfg.notify_position_manager ?? true);
@@ -184,7 +180,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
     setDiscordMsg(null);
     try {
       const cleanWebhook = discordWebhookUrl.trim();
-      const cleanPublic = (discordPublicUrl.trim() || baseUrl.trim() || "https://mod-brokers-invite-thus.trycloudflare.com").replace(/\/+$/, "");
+      const cleanPublic = (discordPublicUrl.trim() || baseUrl.trim() || window.location.origin).replace(/\/+$/, "");
       const autoEnable = runTest && Boolean(cleanWebhook) ? true : discordEnabled;
       await saveDiscordConfig({
         enabled: autoEnable,
@@ -300,7 +296,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
                 type="text"
                 value={discordPublicUrl}
                 onChange={(e) => setDiscordPublicUrl(e.target.value)}
-                placeholder="https://mod-brokers-invite-thus.trycloudflare.com"
+                placeholder="https://your-tunnel.trycloudflare.com หรือ http://localhost:8000"
                 className="font-mono-num mt-1.5 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#e1e1e1] placeholder-[#6e6e6e] focus:border-[#007fd4] focus:outline-none"
               />
             </div>

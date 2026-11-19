@@ -37,6 +37,7 @@ class ProposalConfirmRequest(BaseModel):
     deviation: int = Field(default=30, ge=0, le=500)
     comment: str | None = Field(default=None, max_length=31)
     allow_real: bool = Field(default=False)
+    force: bool = Field(default=False)
 
 
 class ProposalRejectRequest(BaseModel):
@@ -46,6 +47,7 @@ class ProposalRejectRequest(BaseModel):
 class PositionModifyRequest(BaseModel):
     sl: float | None = Field(default=None, ge=0)
     tp: float | None = Field(default=None, ge=0)
+    price_open: float | None = Field(default=None, ge=0)
     allow_real: bool = Field(default=False)
 
 
@@ -67,8 +69,11 @@ class WatchlistUpdateRequest(BaseModel):
 class GauntletEvaluateRequest(BaseModel):
     symbol: str = Field(default="XAUUSD")
     tf: str = Field(default="M15")
-    risk_pct: float = Field(default=15.0, gt=0, le=50)
+    risk_pct: float = Field(default=2.0, gt=0, le=50)
     min_confidence_pct: float = Field(default=75.0, ge=50.0, le=95.0)
+    sl_atr_mult: float = Field(default=1.5, ge=0.4, le=6.0)
+    tp_atr_mult: float = Field(default=2.5, ge=0.5, le=10.0)
+    min_rr_ratio: float = Field(default=1.5, ge=0.8, le=6.0)
     auto_queue: bool = Field(default=False)
 
 
@@ -81,9 +86,18 @@ class WatchdogConfigPatchRequest(BaseModel):
     auto_propose: bool | None = None
     cooldown_min: int | None = Field(default=None, ge=1, le=1440)
     autopilot_enabled: bool | None = None
-    autopilot_min_confidence_pct: float | None = Field(default=None, ge=65.0, le=95.0)
-    autopilot_fixed_lots: float | None = Field(default=None, ge=0.01, le=1.0)
+    autopilot_min_confidence_pct: float | None = Field(default=None, ge=55.0, le=95.0)
+    autopilot_sizing_mode: Literal["FIXED_LOT", "RISK_PCT"] | None = None
+    autopilot_fixed_lots: float | None = Field(default=None, ge=0.01, le=5.0)
+    autopilot_risk_pct: float | None = Field(default=None, gt=0, le=50)
     autopilot_max_open_positions: int | None = Field(default=None, ge=1, le=10)
+    proposal_ttl_min: int | None = Field(default=None, ge=5, le=1440)
+    max_drift_atr: float | None = Field(default=None, ge=0.1, le=5.0)
+    max_daily_loss_pct: float | None = Field(default=None, ge=0.5, le=50.0)
+    max_open_risk_pct: float | None = Field(default=None, ge=1.0, le=100.0)
+    sl_atr_mult: float | None = Field(default=None, ge=0.4, le=6.0)
+    tp_atr_mult: float | None = Field(default=None, ge=0.5, le=10.0)
+    min_rr_ratio: float | None = Field(default=None, ge=0.8, le=6.0)
 
 
 class PositionManagerConfigPatchRequest(BaseModel):

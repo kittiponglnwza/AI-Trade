@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Edit3, ShieldCheck, Trash2, X } from "lucide-react";
+import { AlertOctagon, Edit3, Save, ShieldCheck, Sliders, Trash2, X } from "lucide-react";
 import {
   closePosition,
   fetchPositionManagerStatus,
   modifyPosition,
   movePositionToBreakeven,
+  panicCloseAll,
   updatePositionManagerConfig,
 } from "../services/api";
 import type { OpenPosition, PendingOrder, PositionManagerConfig } from "../types/trading";
@@ -17,31 +18,84 @@ interface PositionsTableProps {
 
 export function PositionsTable({ positions, orders, onUpdated }: PositionsTableProps) {
   const [subTab, setSubTab] = useState<"positions" | "orders">("positions");
-  const [editTarget, setEditTarget] = useState<OpenPosition | null>(null);
+  const [showPmTuning, setShowPmTuning] = useState(false);
+  const [editTarget, setEditTarget] = useState<{
+    ticket: number;
+    symbol: string;
+    side: string;
+    isOrder: boolean;
+    price_open: number;
+    sl: number;
+    tp: number;
+  } | null>(null);
+  const [priceInput, setPriceInput] = useState("");
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
-  const [closeTarget, setCloseTarget] = useState<{ ticket: number; label: string } | null>(null);
+
+  const [closeTarget, setCloseTarget] = useState<{
+    ticket: number;
+    label: string;
+    maxVolume: number | null;
+  } | null>(null);
+  const [closeLotsInput, setCloseLotsInput] = useState("");
+  const [showPanicModal, setShowPanicModal] = useState(false);
+
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [pmCfg, setPmCfg] = useState<PositionManagerConfig | null>(null);
+
+  const [beTriggerInput, setBeTriggerInput] = useState("1.0");
+  const [beOffsetInput, setBeOffsetInput] = useState("5");
+  const [partialTriggerInput, setPartialTriggerInput] = useState("1.5");
+  const [partialPctInput, setPartialPctInput] = useState("50");
+  const [trailStartInput, setTrailStartInput] = useState("1.5");
+  const [trailDistInput, setTrailDistInput] = useState("0.8");
+  const [pollSecInput, setPollSecInput] = useState("5");
 
   useEffect(() => {
     fetchPositionManagerStatus()
-      .then((res) => setPmCfg(res.config))
+      .then((res) => {
+        setPmCfg(res.config);
+        setBeTriggerInput(String(res.config.be_trigger_r ?? 1.0));
+        setBeOffsetInput(String(res.config.be_offset_points ?? 5));
+        setPartialTriggerInput(String(res.config.partial_trigger_r ?? 1.5));
+        setPartialPctInput(String(res.config.partial_close_pct ?? 50));
+        setTrailStartInput(String(res.config.trail_start_r ?? 1.5));
+        setTrailDistInput(String(res.config.trail_distance_r ?? 0.8));
+        setPollSecInput(String(res.config.poll_interval_sec ?? 5));
+      })
       .catch(() => {});
   }, []);
 
-  const handleTogglePmFlag = async (patch: Partial<PositionManagerConfig>) => {
+  const handleTogglePmFlag = async (patch: Partial<PositionManagerConfig>, msg?: string) => {
     setBusy(true);
     setErrMsg(null);
+    setInfoMsg(null);
     try {
       const res = await updatePositionManagerConfig(patch);
       setPmCfg(res.config);
+      if (msg) setInfoMsg(msg);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "อัปเดต Smart Position Manager ไม่สำเร็จ");
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleSavePmNumbers = async () => {
+    await handleTogglePmFlag(
+      {
+        be_trigger_r: Math.min(5, Math.max(0.3, parseFloat(beTriggerInput) || 1.0)),
+        be_offset_points: Math.min(100, Math.max(0, parseInt(beOffsetInput, 10) || 5)),
+        partial_trigger_r: Math.min(10, Math.max(0.5, parseFloat(partialTriggerInput) || 1.5)),
+        partial_close_pct: Math.min(90, Math.max(10, parseFloat(partialPctInput) || 50)),
+        trail_start_r: Math.min(10, Math.max(0.5, parseFloat(trailStartInput) || 1.5)),
+        trail_distance_r: Math.min(5, Math.max(0.2, parseFloat(trailDistInput) || 0.8)),
+        poll_interval_sec: Math.min(120, Math.max(2, parseInt(pollSecInput, 10) || 5)),
+      },
+      "บันทึกค่าตัวเลข Auto-Guard เรียบร้อยแล้ว"
+    );
   };
 
   const handleOneClickBe = async (ticket: number) => {
@@ -57,10 +111,35 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
     }
   };
 
-  const openModify = (pos: OpenPosition) => {
-    setEditTarget(pos);
+  const openModifyPosition = (pos: OpenPosition) => {
+    setEditTarget({
+      ticket: pos.ticket,
+      symbol: pos.symbol,
+      side: pos.side,
+      isOrder: false,
+      price_open: pos.price_open,
+      sl: pos.sl,
+      tp: pos.tp,
+    });
+    setPriceInput(String(pos.price_open));
     setSlInput(pos.sl > 0 ? String(pos.sl) : "");
     setTpInput(pos.tp > 0 ? String(pos.tp) : "");
+    setErrMsg(null);
+  };
+
+  const openModifyOrder = (ord: PendingOrder) => {
+    setEditTarget({
+      ticket: ord.ticket,
+      symbol: ord.symbol,
+      side: ord.side,
+      isOrder: true,
+      price_open: ord.price_open,
+      sl: ord.sl,
+      tp: ord.tp,
+    });
+    setPriceInput(String(ord.price_open));
+    setSlInput(ord.sl > 0 ? String(ord.sl) : "");
+    setTpInput(ord.tp > 0 ? String(ord.tp) : "");
     setErrMsg(null);
   };
 
@@ -71,7 +150,8 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
     try {
       const sl = slInput.trim() ? parseFloat(slInput) : 0;
       const tp = tpInput.trim() ? parseFloat(tpInput) : 0;
-      await modifyPosition(editTarget.ticket, sl, tp);
+      const priceOpen = editTarget.isOrder && priceInput.trim() ? parseFloat(priceInput) : null;
+      await modifyPosition(editTarget.ticket, sl, tp, priceOpen);
       setEditTarget(null);
       onUpdated();
     } catch (err) {
@@ -86,7 +166,14 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
     setBusy(true);
     setErrMsg(null);
     try {
-      await closePosition(closeTarget.ticket);
+      let lotsToClose: number | null = null;
+      if (closeTarget.maxVolume !== null && closeLotsInput.trim()) {
+        const parsed = parseFloat(closeLotsInput);
+        if (Number.isFinite(parsed) && parsed > 0 && parsed < closeTarget.maxVolume) {
+          lotsToClose = Number(parsed.toFixed(2));
+        }
+      }
+      await closePosition(closeTarget.ticket, lotsToClose);
       setCloseTarget(null);
       onUpdated();
     } catch (err) {
@@ -94,6 +181,32 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
     } finally {
       setBusy(false);
     }
+  };
+
+  const submitPanicCloseAll = async () => {
+    setBusy(true);
+    setErrMsg(null);
+    setInfoMsg(null);
+    try {
+      const res = await panicCloseAll(false);
+      setShowPanicModal(false);
+      setInfoMsg(res.message);
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Panic Close All ไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setPartialPreset = (pct: number) => {
+    if (!closeTarget || closeTarget.maxVolume === null) return;
+    if (pct >= 100) {
+      setCloseLotsInput(closeTarget.maxVolume.toFixed(2));
+      return;
+    }
+    const raw = Math.max(0.01, Math.floor(closeTarget.maxVolume * (pct / 100) * 100) / 100);
+    setCloseLotsInput(raw.toFixed(2));
   };
 
   return (
@@ -124,71 +237,201 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
           </button>
         </div>
 
-        {pmCfg && (
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          {pmCfg && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => handleTogglePmFlag({ enabled: !pmCfg.enabled })}
+                className={`flex items-center gap-1 rounded border px-2 py-0.5 font-semibold ${
+                  pmCfg.enabled
+                    ? "border-[#4ec9b0]/50 bg-[#4ec9b0]/15 text-[#4ec9b0]"
+                    : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
+                }`}
+              >
+                <ShieldCheck className="h-3 w-3" />
+                Auto-Guard: {pmCfg.enabled ? "ON" : "OFF"}
+              </button>
+
+              <button
+                type="button"
+                disabled={busy || !pmCfg.enabled}
+                onClick={() => handleTogglePmFlag({ auto_breakeven: !pmCfg.auto_breakeven })}
+                className={`rounded border px-2 py-0.5 ${
+                  pmCfg.enabled && pmCfg.auto_breakeven
+                    ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950]"
+                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+                }`}
+              >
+                Auto-BE (+{pmCfg.be_trigger_r}R)
+              </button>
+
+              <button
+                type="button"
+                disabled={busy || !pmCfg.enabled}
+                onClick={() => handleTogglePmFlag({ auto_partial_tp: !pmCfg.auto_partial_tp })}
+                className={`rounded border px-2 py-0.5 ${
+                  pmCfg.enabled && pmCfg.auto_partial_tp
+                    ? "border-[#007acc]/50 bg-[#007acc]/15 text-[#4fc1ff]"
+                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+                }`}
+              >
+                Partial {pmCfg.partial_close_pct}% (+{pmCfg.partial_trigger_r}R)
+              </button>
+
+              <button
+                type="button"
+                disabled={busy || !pmCfg.enabled}
+                onClick={() => handleTogglePmFlag({ auto_trailing_sl: !pmCfg.auto_trailing_sl })}
+                className={`rounded border px-2 py-0.5 ${
+                  pmCfg.enabled && pmCfg.auto_trailing_sl
+                    ? "border-[#c586c0]/50 bg-[#c586c0]/15 text-[#e5a6e0]"
+                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
+                }`}
+              >
+                Trail SL (+{pmCfg.trail_start_r}R)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPmTuning((v) => !v)}
+                className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
+                  showPmTuning
+                    ? "border-[#007acc] bg-[#007acc]/20 text-white"
+                    : "border-[#3c3c3c] bg-[#313131] text-[#cccccc] hover:bg-[#3c3c3c]"
+                }`}
+                title="ปรับตัวเลข +R และ % ของระบบ Auto-Guard"
+              >
+                <Sliders className="h-3 w-3 text-[#dcdcaa]" />
+                <span>ตั้งค่า Guard</span>
+              </button>
+            </>
+          )}
+
+          {(positions.length > 0 || orders.length > 0) && (
             <button
               type="button"
               disabled={busy}
-              onClick={() => handleTogglePmFlag({ enabled: !pmCfg.enabled })}
-              className={`flex items-center gap-1 rounded border px-2 py-0.5 font-semibold ${
-                pmCfg.enabled
-                  ? "border-[#4ec9b0]/50 bg-[#4ec9b0]/15 text-[#4ec9b0]"
-                  : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
-              }`}
-              title="ระบบดูแลไม้หลังเข้าออเดอร์อัตโนมัติ (ตรวจสอบทุก 5 วินาที)"
+              onClick={() => setShowPanicModal(true)}
+              className="flex items-center gap-1 rounded border border-[#f14c4c] bg-[#c72e2e] px-2.5 py-0.5 font-bold text-white hover:bg-[#f14c4c]"
+              title="ปิดทุกไม้ที่เปิดอยู่ + ยกเลิก Pending ทั้งหมด + หยุด Auto-Pilot ทันที"
             >
-              <ShieldCheck className="h-3 w-3" />
-              Auto-Guard: {pmCfg.enabled ? "ON" : "OFF"}
+              <AlertOctagon className="h-3 w-3" />
+              PANIC CLOSE ALL
             </button>
+          )}
+        </div>
+      </div>
 
+      {showPmTuning && (
+        <div className="border-b border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs space-y-2.5">
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
+            <div>
+              <label className="block text-[11px] text-[#3fb950]">ทริกเกอร์บังทุน (+R)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.3"
+                max="5"
+                value={beTriggerInput}
+                onChange={(e) => setBeTriggerInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#3fb950]">เผื่อค่าคอม BE (Points)</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={beOffsetInput}
+                onChange={(e) => setBeOffsetInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#4fc1ff]">ทริกเกอร์แบ่งปิด (+R)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.5"
+                max="10"
+                value={partialTriggerInput}
+                onChange={(e) => setPartialTriggerInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#4fc1ff]">สัดส่วนแบ่งปิด (%)</label>
+              <input
+                type="number"
+                step="5"
+                min="10"
+                max="90"
+                value={partialPctInput}
+                onChange={(e) => setPartialPctInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#e5a6e0]">เริ่มลาก Trail SL (+R)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.5"
+                max="10"
+                value={trailStartInput}
+                onChange={(e) => setTrailStartInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#e5a6e0]">ระยะห่าง Trail (R)</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.2"
+                max="5"
+                value={trailDistInput}
+                onChange={(e) => setTrailDistInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#9d9d9d]">รอบเช็ก (วินาที)</label>
+              <input
+                type="number"
+                min="2"
+                max="120"
+                value={pollSecInput}
+                onChange={(e) => setPollSecInput(e.target.value)}
+                className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1 text-xs text-[#e1e1e1]"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end">
             <button
               type="button"
-              disabled={busy || !pmCfg.enabled}
-              onClick={() => handleTogglePmFlag({ auto_breakeven: !pmCfg.auto_breakeven })}
-              className={`rounded border px-2 py-0.5 ${
-                pmCfg.enabled && pmCfg.auto_breakeven
-                  ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950]"
-                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-              }`}
-              title="เมื่อกำไรถึง +1.0R จะขยับ SL มาบังทุนให้อัตโนมัติ"
+              disabled={busy}
+              onClick={handleSavePmNumbers}
+              className="flex items-center gap-1.5 rounded bg-[#238636] px-3 py-1 text-xs font-semibold text-white hover:bg-[#2ea043] disabled:opacity-50"
             >
-              Auto-BE (+{pmCfg.be_trigger_r}R)
-            </button>
-
-            <button
-              type="button"
-              disabled={busy || !pmCfg.enabled}
-              onClick={() => handleTogglePmFlag({ auto_partial_tp: !pmCfg.auto_partial_tp })}
-              className={`rounded border px-2 py-0.5 ${
-                pmCfg.enabled && pmCfg.auto_partial_tp
-                  ? "border-[#007acc]/50 bg-[#007acc]/15 text-[#4fc1ff]"
-                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-              }`}
-              title="เมื่อกำไรถึง +1.5R จะแบ่งปิด 50% ล็อกกำไรเข้ากระเป๋า"
-            >
-              Partial {pmCfg.partial_close_pct}% (+{pmCfg.partial_trigger_r}R)
-            </button>
-
-            <button
-              type="button"
-              disabled={busy || !pmCfg.enabled}
-              onClick={() => handleTogglePmFlag({ auto_trailing_sl: !pmCfg.auto_trailing_sl })}
-              className={`rounded border px-2 py-0.5 ${
-                pmCfg.enabled && pmCfg.auto_trailing_sl
-                  ? "border-[#c586c0]/50 bg-[#c586c0]/15 text-[#e5a6e0]"
-                  : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-              }`}
-              title="เมื่อกำไรถึง +1.5R จะลาก SL ตามกราฟอัตโนมัติ"
-            >
-              Trail SL (+{pmCfg.trail_start_r}R)
+              <Save className="h-3.5 w-3.5" />
+              บันทึกค่าตัวเลข Auto-Guard
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {errMsg && (
         <div className="m-3 rounded border border-[#f14c4c]/40 bg-[#5a1d1d]/40 p-2.5 text-xs text-[#f48771] break-words">
           {errMsg}
+        </div>
+      )}
+      {infoMsg && (
+        <div className="m-3 rounded border border-[#3fb950]/40 bg-[#1e3a29]/40 p-2.5 text-xs text-[#3fb950] break-words">
+          {infoMsg}
         </div>
       )}
 
@@ -268,7 +511,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                       )}
                       {pos.partial_applied && (
                         <span className="rounded bg-[#007acc]/20 px-1 py-0.5 text-[9px] font-bold text-[#4fc1ff]">
-                          50% TP
+                          PARTIAL
                         </span>
                       )}
                       {(pos.trail_count ?? 0) > 0 && (
@@ -300,7 +543,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                       )}
                       <button
                         type="button"
-                        onClick={() => openModify(pos)}
+                        onClick={() => openModifyPosition(pos)}
                         className="rounded border border-[#3c3c3c] bg-[#313131] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#3c3c3c]"
                         title="Edit SL/TP"
                       >
@@ -308,12 +551,14 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
                           setCloseTarget({
                             ticket: pos.ticket,
-                            label: `Close ${pos.side} ${pos.volume} ${pos.symbol} (#${pos.ticket})`,
-                          })
-                        }
+                            label: `${pos.side} ${pos.volume.toFixed(2)} Lot ${pos.symbol} (#${pos.ticket})`,
+                            maxVolume: pos.volume,
+                          });
+                          setCloseLotsInput(pos.volume.toFixed(2));
+                        }}
                         className="rounded border border-[#f14c4c]/40 bg-[#5a1d1d]/50 px-2 py-1 text-[11px] font-medium text-[#f48771] hover:bg-[#5a1d1d]"
                       >
                         Close
@@ -341,19 +586,31 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                   <td className="py-2 pr-3 text-[#6e6e6e]">—</td>
                   <td className="py-2 pr-3 text-right text-[#6e6e6e]">PENDING</td>
                   <td className="py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCloseTarget({
-                          ticket: ord.ticket,
-                          label: `Cancel ${ord.side} #${ord.ticket}`,
-                        })
-                      }
-                      className="inline-flex items-center gap-1 rounded border border-[#3c3c3c] bg-[#313131] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#3c3c3c]"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                      Cancel
-                    </button>
+                    <div className="inline-flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openModifyOrder(ord)}
+                        className="rounded border border-[#3c3c3c] bg-[#313131] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#3c3c3c]"
+                        title="แก้ไขราคาเข้า / SL / TP ของ Pending Order"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCloseTarget({
+                            ticket: ord.ticket,
+                            label: `Cancel ${ord.side} #${ord.ticket}`,
+                            maxVolume: null,
+                          });
+                          setCloseLotsInput("");
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-[#3c3c3c] bg-[#313131] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#3c3c3c]"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Cancel
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -377,6 +634,18 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
               </button>
             </div>
             <div className="mt-4 space-y-3">
+              {editTarget.isOrder && (
+                <div>
+                  <label className="block text-xs text-[#dcdcaa]">Pending Entry Price</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={priceInput}
+                    onChange={(e) => setPriceInput(e.target.value)}
+                    className="font-mono-num mt-1 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-1.5 text-sm text-[#e1e1e1] focus:border-[#007fd4] focus:outline-none"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-[#f14c4c]">Stop Loss (0 = Clear)</label>
                 <input
@@ -412,7 +681,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                 onClick={submitModify}
                 className="rounded bg-[#007acc] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#1f8ad2] disabled:opacity-50"
               >
-                {busy ? "Saving..." : "Save SL/TP"}
+                {busy ? "Saving..." : "Save Changes"}
               </button>
             </div>
           </div>
@@ -422,8 +691,40 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
       {closeTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
           <div className="w-full max-w-sm rounded-md border border-[#f14c4c]/40 bg-[#252526] p-5 shadow-2xl">
-            <h3 className="text-sm font-bold text-[#f14c4c]">Confirm Close / Cancel</h3>
-            <p className="mt-2 text-xs text-[#cccccc]">{closeTarget.label}</p>
+            <h3 className="text-sm font-bold text-[#f14c4c]">
+              {closeTarget.maxVolume !== null ? "Close / Partial Close Position" : "Cancel Pending Order"}
+            </h3>
+            <p className="mt-1.5 text-xs text-[#cccccc]">{closeTarget.label}</p>
+
+            {closeTarget.maxVolume !== null && (
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between text-xs text-[#cccccc]">
+                  <span>จำนวน Lot ที่จะปิด</span>
+                  <div className="flex gap-1">
+                    {[25, 50, 75, 100].map((pct) => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setPartialPreset(pct)}
+                        className="rounded border border-[#3c3c3c] bg-[#313131] px-1.5 py-0.5 text-[10px] font-semibold text-[#e1e1e1] hover:bg-[#3c3c3c]"
+                      >
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max={closeTarget.maxVolume}
+                  value={closeLotsInput}
+                  onChange={(e) => setCloseLotsInput(e.target.value)}
+                  className="font-mono-num w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-1.5 text-sm text-[#e1e1e1] focus:border-[#007fd4] focus:outline-none"
+                />
+              </div>
+            )}
+
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -439,6 +740,39 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
                 className="rounded bg-[#c72e2e] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#f14c4c] disabled:opacity-50"
               >
                 {busy ? "Closing..." : "Confirm Close"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPanicModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="w-full max-w-md rounded-md border border-[#f14c4c] bg-[#252526] p-5 shadow-2xl">
+            <div className="flex items-center gap-2 text-[#f14c4c]">
+              <AlertOctagon className="h-5 w-5" />
+              <h3 className="text-base font-bold">🚨 ยืนยัน PANIC CLOSE ALL (ล้างพอร์ตฉุกเฉิน)</h3>
+            </div>
+            <p className="mt-2.5 text-xs leading-relaxed text-[#cccccc]">
+              ระบบจะทำการ <strong>ปิดทุกออเดอร์ที่เปิดอยู่ ({positions.length} ไม้)</strong>,{" "}
+              <strong>ยกเลิก Pending Order ทั้งหมด ({orders.length} รายการ)</strong> และ{" "}
+              <strong>ปิดสวิตช์ Auto-Pilot ทันที</strong>
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPanicModal(false)}
+                className="rounded border border-[#3c3c3c] bg-[#313131] px-3.5 py-1.5 text-xs text-[#cccccc]"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={submitPanicCloseAll}
+                className="rounded bg-[#c72e2e] px-4 py-1.5 text-xs font-bold text-white hover:bg-[#f14c4c] disabled:opacity-50"
+              >
+                {busy ? "กำลังปิดทุกไม้..." : "🚨 ยืนยันปิดทุกไม้ทันที"}
               </button>
             </div>
           </div>

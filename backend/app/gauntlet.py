@@ -20,8 +20,11 @@ def _fmt_ts(epoch_sec: int) -> str:
 def evaluate_gauntlet(
     symbol: str = "XAUUSD",
     tf: str = "M15",
-    risk_pct: float = 15.0,
+    risk_pct: float = 2.0,
     min_confidence_pct: float = 75.0,
+    sl_atr_mult: float = 1.5,
+    tp_atr_mult: float = 2.5,
+    min_rr_ratio: float = 1.5,
 ) -> dict[str, Any]:
     """Run an auditable 9-gate technical + news + ML confidence evaluation on a symbol."""
     tf_u = tf.upper()
@@ -40,13 +43,13 @@ def evaluate_gauntlet(
         atr = max(quote["point"] * 50, round(quote["bid"] * 0.005, digits))
 
     # G1: Data freshness & market session open check
-    ref_tick = mt5.symbol_info_tick("XAUUSD")
-    ref_epoch = int(ref_tick.time) if ref_tick and ref_tick.time > 0 else quote["tick_epoch"]
+    ref_epoch = mt5_service.get_reference_server_epoch() or quote["tick_epoch"]
     tick_age = abs(ref_epoch - quote["tick_epoch"]) if ref_epoch and quote["tick_epoch"] else 0
+    is_weekend = datetime.now(timezone.utc).weekday() in (5, 6)
     if quote["bid"] <= 0 or quote["ask"] <= 0 or len(candles) < 50:
         g1_status = "FAIL"
         g1_detail = f"Invalid quote or insufficient bars ({len(candles)} bars)."
-    elif tick_age >= 900:
+    elif is_weekend or tick_age >= 900:
         g1_status = "FAIL"
         g1_detail = f"Market session CLOSED (last tick is {tick_age // 60}m old) — blocked to prevent 10018 Market closed."
     else:
@@ -151,27 +154,27 @@ def evaluate_gauntlet(
     rr_val = 0.0
 
     if direction == "BUY":
-        raw_sl = min(swing_lo - 0.3 * atr, entry_ref - 1.5 * atr)
-        max_sl = entry_ref - 2.5 * atr
-        min_allowed_sl = entry_ref - max(1.1 * atr, min_stop * 1.2)
+        raw_sl = min(swing_lo - 0.3 * atr, entry_ref - sl_atr_mult * atr)
+        max_sl = entry_ref - max(sl_atr_mult * 1.7, 2.5) * atr
+        min_allowed_sl = entry_ref - max(min(sl_atr_mult * 0.8, 1.1) * atr, min_stop * 1.2)
         sl_price = round(max(max_sl, min(raw_sl, min_allowed_sl)), digits)
         sl_dist = abs(entry_ref - sl_price)
-        tp_dist = max(2.5 * atr, 1.7 * sl_dist)
+        tp_dist = max(tp_atr_mult * atr, max(min_rr_ratio, 1.1) * sl_dist)
         tp_price = round(entry_ref + tp_dist, digits)
         rr_val = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
     elif direction == "SELL":
-        raw_sl = max(swing_hi + 0.3 * atr, entry_ref + 1.5 * atr)
-        max_sl = entry_ref + 2.5 * atr
-        min_allowed_sl = entry_ref + max(1.1 * atr, min_stop * 1.2)
+        raw_sl = max(swing_hi + 0.3 * atr, entry_ref + sl_atr_mult * atr)
+        max_sl = entry_ref + max(sl_atr_mult * 1.7, 2.5) * atr
+        min_allowed_sl = entry_ref + max(min(sl_atr_mult * 0.8, 1.1) * atr, min_stop * 1.2)
         sl_price = round(min(max_sl, max(raw_sl, min_allowed_sl)), digits)
         sl_dist = abs(sl_price - entry_ref)
-        tp_dist = max(2.5 * atr, 1.7 * sl_dist)
+        tp_dist = max(tp_atr_mult * atr, max(min_rr_ratio, 1.1) * sl_dist)
         tp_price = round(entry_ref - tp_dist, digits)
         rr_val = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
 
     if sl_price is not None and abs(entry_ref - sl_price) > min_stop:
         g5_status = "PASS"
-        g5_detail = f"Structural SL at {sl_price:.{digits}f} (dist ${abs(entry_ref - sl_price):.{digits}f}, stops_level ${min_stop:.{digits}f})."
+        g5_detail = f"Structural SL at {sl_price:.{digits}f} ({sl_atr_mult:.1f}xATR, dist ${abs(entry_ref - sl_price):.{digits}f})."
     else:
         g5_status = "FAIL"
         g5_detail = "No valid structural SL level available without directional bias."
@@ -185,12 +188,12 @@ def evaluate_gauntlet(
         }
     )
 
-    if direction in ("BUY", "SELL") and rr_val >= 1.50:
+    if direction in ("BUY", "SELL") and rr_val >= min_rr_ratio:
         g6_status = "PASS"
-        g6_detail = f"TP {tp_price:.{digits}f} yields Risk:Reward 1:{rr_val:.2f} (>= 1:1.50)."
+        g6_detail = f"TP {tp_price:.{digits}f} ({tp_atr_mult:.1f}xATR) yields Risk:Reward 1:{rr_val:.2f} (>= 1:{min_rr_ratio:.2f})."
     else:
         g6_status = "FAIL"
-        g6_detail = "Risk:Reward below 1:1.50 threshold or no setup."
+        g6_detail = f"Risk:Reward below 1:{min_rr_ratio:.2f} threshold or no setup."
     gates.append(
         {
             "id": "G6_RISK_REWARD",
@@ -369,7 +372,13 @@ def evaluate_gauntlet(
     }
 
 
-def run_historical_backtest(symbol: str = "XAUUSD", tf: str = "M15", bars: int = 600) -> dict[str, Any]:
+def run_historical_backtest(
+    symbol: str = "XAUUSD",
+    tf: str = "M15",
+    bars: int = 600,
+    sl_atr_mult: float = 1.5,
+    tp_atr_mult: float = 2.5,
+) -> dict[str, Any]:
     """Simulate a non-lookahead EMA trend + RSI pullback rule on real MT5 historical bars."""
     tf_u = tf.upper()
     res = mt5_service.get_candles(symbol, tf_u, bars=bars)
@@ -413,8 +422,8 @@ def run_historical_backtest(symbol: str = "XAUUSD", tf: str = "M15", bars: int =
             continue
 
         entry = float(next_bar["open"])
-        risk_dist = 1.5 * float(atr)
-        reward_dist = 2.5 * float(atr)
+        risk_dist = float(sl_atr_mult) * float(atr)
+        reward_dist = float(tp_atr_mult) * float(atr)
         sl = round(entry - risk_dist if signal == "BUY" else entry + risk_dist, digits)
         tp = round(entry + reward_dist if signal == "BUY" else entry - reward_dist, digits)
 

@@ -36,14 +36,23 @@ DEFAULT_WATCHDOG_CONFIG: dict[str, Any] = {
     "enabled": True,
     "interval_sec": 120,
     "timeframe": "M15",
-    "risk_pct": 15.0,
+    "risk_pct": 2.0,
     "min_confidence_pct": 75.0,
     "auto_propose": True,
     "cooldown_min": 30,
     "autopilot_enabled": False,
     "autopilot_min_confidence_pct": 80.0,
+    "autopilot_sizing_mode": "FIXED_LOT",
     "autopilot_fixed_lots": 0.01,
+    "autopilot_risk_pct": 1.0,
     "autopilot_max_open_positions": 3,
+    "proposal_ttl_min": 45,
+    "max_drift_atr": 0.6,
+    "max_daily_loss_pct": 5.0,
+    "max_open_risk_pct": 15.0,
+    "sl_atr_mult": 1.5,
+    "tp_atr_mult": 2.5,
+    "min_rr_ratio": 1.5,
 }
 
 DEFAULT_POSITION_MANAGER_CONFIG: dict[str, Any] = {
@@ -63,7 +72,7 @@ DEFAULT_POSITION_MANAGER_CONFIG: dict[str, Any] = {
 DEFAULT_DISCORD_CONFIG: dict[str, Any] = {
     "enabled": False,
     "webhook_url": "",
-    "public_base_url": "https://mod-brokers-invite-thus.trycloudflare.com",
+    "public_base_url": "",
     "notify_proposals": True,
     "notify_autopilot": True,
     "notify_position_manager": True,
@@ -361,11 +370,39 @@ def update_proposal_status(
             return _hydrate_proposal(row) if row else None
 
 
-def delete_proposal(proposal_id: int, db_path: Path = DB_PATH) -> None:
-    """Delete a proposal record (used for test cleanup)."""
+def expire_stale_proposals(ttl_min: int = 45, db_path: Path = DB_PATH) -> int:
+    """Automatically expire PENDING proposals older than ttl_min minutes."""
+    if ttl_min <= 0:
+        return 0
+    now_dt = datetime.now(timezone.utc)
+    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    expired_count = 0
     with _DB_LOCK:
         with get_connection(db_path) as conn:
-            conn.execute("DELETE FROM trade_proposals WHERE id = ?", (proposal_id,))
+            rows = conn.execute(
+                "SELECT id, created_at FROM trade_proposals WHERE status = 'PENDING'"
+            ).fetchall()
+            for r in rows:
+                try:
+                    created_dt = datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                    age_min = (now_dt - created_dt).total_seconds() / 60.0
+                    if age_min >= ttl_min:
+                        conn.execute(
+                            """
+                            UPDATE trade_proposals
+                            SET status = 'REJECTED',
+                                updated_at = ?,
+                                exec_comment = ?
+                            WHERE id = ?
+                            """,
+                            (now_str, f"Auto-expired after {int(age_min)}m (TTL {ttl_min}m)", r["id"]),
+                        )
+                        expired_count += 1
+                except Exception:
+                    continue
+    return expired_count
 
 
 def create_execution_log(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
@@ -415,11 +452,12 @@ def create_execution_log(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[
             return dict(row) if row else {}
 
 
-def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> dict[str, int]:
+def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> dict[str, Any]:
     """Upsert closed MT5 history deals into trade_logs while preserving user notes & strategy tags."""
     now = utc_now_iso()
     inserted = 0
     updated = 0
+    newly_closed_rows: list[dict[str, Any]] = []
 
     with _DB_LOCK:
         with get_connection(db_path) as conn:
@@ -430,16 +468,17 @@ def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> di
                 existing = None
                 if deal_ticket is not None:
                     existing = conn.execute(
-                        "SELECT id FROM trade_logs WHERE mt5_deal_ticket = ?",
+                        "SELECT id, status FROM trade_logs WHERE mt5_deal_ticket = ?",
                         (deal_ticket,),
                     ).fetchone()
                 if existing is None and pos_id is not None:
                     existing = conn.execute(
-                        "SELECT id FROM trade_logs WHERE mt5_position_id = ? AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+                        "SELECT id, status FROM trade_logs WHERE mt5_position_id = ? ORDER BY id DESC LIMIT 1",
                         (pos_id,),
                     ).fetchone()
 
                 if existing is not None:
+                    was_open = existing["status"] == "OPEN"
                     conn.execute(
                         """
                         UPDATE trade_logs
@@ -479,8 +518,12 @@ def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> di
                         ),
                     )
                     updated += 1
+                    if was_open:
+                        row = conn.execute("SELECT * FROM trade_logs WHERE id = ?", (existing["id"],)).fetchone()
+                        if row:
+                            newly_closed_rows.append(dict(row))
                 else:
-                    conn.execute(
+                    cur = conn.execute(
                         """
                         INSERT INTO trade_logs (
                             mt5_deal_ticket, mt5_position_id, symbol, side, volume,
@@ -511,8 +554,11 @@ def upsert_mt5_deals(deals: list[dict[str, Any]], db_path: Path = DB_PATH) -> di
                         ),
                     )
                     inserted += 1
+                    row = conn.execute("SELECT * FROM trade_logs WHERE id = ?", (cur.lastrowid,)).fetchone()
+                    if row:
+                        newly_closed_rows.append(dict(row))
 
-    return {"inserted": inserted, "updated": updated, "total": len(deals)}
+    return {"inserted": inserted, "updated": updated, "total": len(deals), "newly_closed_rows": newly_closed_rows}
 
 
 def list_trade_logs(

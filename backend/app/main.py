@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import hmac
 from typing import Any
 import urllib.parse
 
@@ -112,8 +113,10 @@ app.add_middleware(
 
 
 def verify_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
-    """Require matching X-API-Key on mutating routes whenever API_KEY is configured."""
-    if API_KEY and x_api_key != API_KEY:
+    """Require matching X-API-Key using constant-time comparison."""
+    expected = (API_KEY or "mt5-local-dev-key").encode("utf-8")
+    provided = (x_api_key or "").encode("utf-8")
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header.")
 
 
@@ -150,15 +153,27 @@ async def get_market_snapshot(symbol: str = Query(default=DEFAULT_SYMBOL)) -> di
     try:
         snap = await asyncio.to_thread(mt5_service.get_market_snapshot, symbol)
         snap["positions"] = enrich_open_positions(snap.get("positions") or [])
-        acc = snap["account"]
-        record_equity_snapshot(
-            balance=acc["balance"],
-            equity=acc["equity"],
-            floating_pnl=acc["profit"],
-            margin_free=acc["margin_free"],
-            min_interval_sec=300,
-        )
+        try:
+            snap["risk_status"] = await asyncio.to_thread(mt5_service.get_portfolio_risk_status)
+        except Exception:
+            snap["risk_status"] = None
         return snap
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.get("/api/risk-status")
+async def get_risk_status_endpoint() -> dict[str, Any]:
+    try:
+        status = await asyncio.to_thread(mt5_service.get_portfolio_risk_status)
+        cfg = get_watchdog_config()
+        return {
+            **status,
+            "max_daily_loss_pct": float(cfg.get("max_daily_loss_pct", 5.0)),
+            "max_open_risk_pct": float(cfg.get("max_open_risk_pct", 15.0)),
+            "proposal_ttl_min": int(cfg.get("proposal_ttl_min", 45)),
+            "max_drift_atr": float(cfg.get("max_drift_atr", 0.6)),
+        }
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
 
@@ -293,6 +308,63 @@ async def post_confirm_proposal(
         )
         raise HTTPException(status_code=400, detail=msg)
 
+    # Proposal TTL, Price-Drift, and Circuit Breaker Safety Checks (unless force=True)
+    wd_cfg = get_watchdog_config()
+    if not req.force:
+        ttl_min = int(wd_cfg.get("proposal_ttl_min", 45))
+        if ttl_min > 0 and proposal.get("created_at"):
+            try:
+                created_dt = datetime.strptime(proposal["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                age_min = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0
+                if age_min > ttl_min:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"โพย #{proposal_id} สร้างมาแล้ว {int(age_min)} นาที (เกินเวลาหมดอายุ {ttl_min} นาที) — กรุณาวิเคราะห์ใหม่เพื่อป้องกันเข้าไม้ราคาเก่า",
+                    )
+            except ValueError:
+                pass
+
+        # Check Daily Max Loss & Portfolio Heat Circuit Breakers
+        try:
+            risk_st = await asyncio.to_thread(mt5_service.get_portfolio_risk_status)
+            max_daily_loss = float(wd_cfg.get("max_daily_loss_pct", 5.0))
+            max_open_heat = float(wd_cfg.get("max_open_risk_pct", 15.0))
+            if risk_st["daily_total_pnl_pct"] <= -abs(max_daily_loss):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"ระบบตัดไฟรายวันทำงาน (Daily Loss {risk_st['daily_total_pnl_pct']:.2f}% แตะลิมิต -{max_daily_loss:.1f}%) — ปรับลิมิตใน Watchdog Settings หากต้องการเทรดต่อ",
+                )
+            if risk_st["open_risk_pct"] >= abs(max_open_heat):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"ความเสี่ยงรวมของไม้ที่ถืออยู่ ({risk_st['open_risk_pct']:.1f}%) เต็มเพดานพอร์ต ({max_open_heat:.1f}%) แล้ว — ปิดไม้เดิมหรือเลื่อน SL บังทุนก่อนเปิดไม้เพิ่ม",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+        # Check Price-Drift on MARKET orders
+        if proposal.get("order_type") == "MARKET":
+            try:
+                q = await asyncio.to_thread(mt5_service.get_quote, proposal["symbol"])
+                is_buy = str(proposal["side"]).upper().startswith("BUY")
+                cur_p = float(q["ask"] if is_buy else q["bid"])
+                prop_entry = float(proposal["entry_price"])
+                prop_sl = float(proposal["sl"]) if proposal.get("sl") else None
+                if prop_sl:
+                    sl_dist = abs(prop_entry - prop_sl)
+                    max_drift_ratio = float(wd_cfg.get("max_drift_atr", 0.6))
+                    if sl_dist > 0 and abs(cur_p - prop_entry) > sl_dist * max_drift_ratio:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"ราคาปัจจุบัน ({cur_p}) วิ่งหนีจากจุดเข้าเดิม ({prop_entry}) เกินระยะปลอดภัยแล้ว — กรุณากดประเมินใหม่",
+                        )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
     try:
         exec_res = await asyncio.to_thread(
             mt5_service.send_order,
@@ -420,14 +492,15 @@ async def post_reject_proposal(
 
 @app.patch("/api/positions/{ticket}", dependencies=[Depends(verify_api_key)])
 async def patch_modify_position(ticket: int, body: PositionModifyRequest) -> dict[str, Any]:
-    if body.sl is None and body.tp is None:
-        raise HTTPException(status_code=400, detail="Provide at least one of sl or tp.")
+    if body.sl is None and body.tp is None and body.price_open is None:
+        raise HTTPException(status_code=400, detail="Provide at least one of sl, tp, or price_open.")
     try:
         res = await asyncio.to_thread(
             mt5_service.modify_position,
             ticket,
             body.sl,
             body.tp,
+            body.price_open,
             body.allow_real,
         )
         log_audit(
@@ -437,6 +510,33 @@ async def patch_modify_position(ticket: int, body: PositionModifyRequest) -> dic
             payload=res,
         )
         return res
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.post("/api/positions/panic-close-all", dependencies=[Depends(verify_api_key)])
+async def post_panic_close_all(allow_real: bool = Query(default=False)) -> dict[str, Any]:
+    """Emergency 1-Click Kill-Switch: pause Auto-Pilot, close all open positions, and cancel all pending orders."""
+    try:
+        set_watchdog_config({"autopilot_enabled": False})
+        res = await asyncio.to_thread(mt5_service.panic_close_all, allow_real)
+        deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, 30)
+        sync_summary = upsert_mt5_deals(deals)
+        msg = (
+            f"🚨 PANIC KILL-SWITCH: ปิดออเดอร์ {res['closed_positions_count']} ไม้, "
+            f"ยกเลิก Pending {res['cancelled_orders_count']} รายการ และปิดโหมด Auto-Pilot แล้ว"
+        )
+        log_audit(
+            event_type="PANIC_CLOSE_ALL",
+            actor="USER",
+            summary=msg,
+            payload=res,
+        )
+        add_system_log("WARN", "RISK_GUARD", msg)
+        newly_closed = sync_summary.get("newly_closed_rows") or []
+        if newly_closed:
+            asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
+        return {**res, "message": msg}
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
 
@@ -469,8 +569,9 @@ async def post_close_position(
             f"Closed #{ticket} ({res['symbol']}) @ {res.get('close_price', '-')}",
             symbol=res["symbol"],
         )
-        if sync_summary["inserted"] > 0:
-            asyncio.create_task(asyncio.to_thread(sync_trade_rows, list_trade_logs(limit=sync_summary["inserted"])))
+        newly_closed = sync_summary.get("newly_closed_rows") or []
+        if newly_closed:
+            asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
         return {"close": res, "sync": sync_summary}
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
@@ -507,8 +608,9 @@ async def post_sync_logs(days: int = Query(default=90, ge=1, le=3650)) -> dict[s
         "SYNC",
         f"Synced {summary['total']} closed MT5 deal(s) (new: {summary['inserted']}, updated: {summary['updated']})",
     )
-    if summary["inserted"] > 0:
-        asyncio.create_task(asyncio.to_thread(sync_trade_rows, list_trade_logs(limit=summary["inserted"])))
+    newly_closed = summary.get("newly_closed_rows") or []
+    if newly_closed:
+        asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
     return summary
 
 
@@ -614,6 +716,9 @@ async def post_gauntlet_evaluate(
             body.tf,
             body.risk_pct,
             body.min_confidence_pct,
+            body.sl_atr_mult,
+            body.tp_atr_mult,
+            body.min_rr_ratio,
         )
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
@@ -702,9 +807,11 @@ async def get_backtest_endpoint(
     symbol: str = Query(default=DEFAULT_SYMBOL),
     tf: str = Query(default="M15"),
     bars: int = Query(default=600, ge=120, le=1500),
+    sl_atr_mult: float = Query(default=1.5, ge=0.4, le=6.0),
+    tp_atr_mult: float = Query(default=2.5, ge=0.5, le=10.0),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(run_historical_backtest, symbol, tf, bars)
+        return await asyncio.to_thread(run_historical_backtest, symbol, tf, bars, sl_atr_mult, tp_atr_mult)
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
 
@@ -739,7 +846,7 @@ async def get_system_logs(
     return {"logs": logs, "count": len(logs)}
 
 
-@app.get("/api/sheets/config")
+@app.get("/api/sheets/config", dependencies=[Depends(verify_api_key)])
 async def get_sheets_config_endpoint() -> dict[str, Any]:
     cfg = get_sheets_config()
     return {
@@ -752,6 +859,17 @@ async def get_sheets_config_endpoint() -> dict[str, Any]:
 
 @app.put("/api/sheets/config", dependencies=[Depends(verify_api_key)])
 async def put_sheets_config_endpoint(body: SheetsConfigRequest) -> dict[str, Any]:
+    w_url = (body.webhook_url or "").strip()
+    if w_url and not (
+        w_url.startswith("https://script.google.com/")
+        or w_url.startswith("https://script.googleusercontent.com/")
+        or w_url.startswith("http://127.0.0.1:")
+        or w_url.startswith("http://localhost:")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Google Sheets Webhook URL ต้องขึ้นต้นด้วย https://script.google.com/macros/s/...",
+        )
     updated = set_sheets_config(body.model_dump(exclude_none=True))
     add_system_log("INFO", "SHEETS", f"Updated Google Sheets sync config (enabled={updated.get('enabled')})")
     return updated
@@ -807,7 +925,7 @@ async def post_position_breakeven(ticket: int) -> dict[str, Any]:
         raise _map_mt5_error(exc) from exc
 
 
-@app.get("/api/discord/config")
+@app.get("/api/discord/config", dependencies=[Depends(verify_api_key)])
 async def get_discord_config_endpoint() -> dict[str, Any]:
     return get_discord_config()
 
@@ -979,8 +1097,7 @@ def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
     quote = mt5_service.get_quote(resolved)
     positions = enrich_open_positions(mt5_service.get_open_positions())
     orders = mt5_service.get_pending_orders()
-    candles_res = mt5_service.get_candles(resolved, tf, bars=5)
-    last_bar = candles_res["candles"][-1] if candles_res["candles"] else None
+    last_bar = mt5_service.get_last_bar_fast(resolved, tf)
 
     return {
         "type": "tick",

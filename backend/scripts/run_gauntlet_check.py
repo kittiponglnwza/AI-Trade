@@ -281,18 +281,33 @@ def main() -> int:
         ),
     )
 
-    # Gate 11: Discord 1-Click Notify + Smart Position Manager (BE/Partial/Trail) + Auto-Pilot Stats
+    # Gate 11: Discord 1-Click Notify + Smart Position Manager + Risk Guard + Word-Boundary Sentiment
     from app.discord_notify import (
         build_proposal_discord_payload,
         sign_discord_action_token,
         verify_discord_action_token,
     )
+    from app.news_service import _score_article
     from app.position_manager import evaluate_position_plan
 
     pm_status = http_json("GET", f"{BASE}/api/position-manager/status")
     pm_cycle = http_json("POST", f"{BASE}/api/position-manager/run", api_key=API_KEY)
-    discord_cfg = http_json("GET", f"{BASE}/api/discord/config")
+    discord_cfg = http_json("GET", f"{BASE}/api/discord/config", api_key=API_KEY)
+    risk_st = http_json("GET", f"{BASE}/api/risk-status")
     stats_res = http_json("GET", f"{BASE}/api/stats")
+
+    # Verify unauthenticated GET /api/discord/config is blocked with 401
+    unauth_blocked = False
+    try:
+        http_json("GET", f"{BASE}/api/discord/config")
+    except urllib.error.HTTPError as exc:
+        unauth_blocked = exc.code == 401
+
+    # Verify word-boundary regex does NOT false-match 'again'/'against' as 'gain' or 'commission' as 'miss'
+    false_tag, false_score, false_matched, _ = _score_article(
+        "Traders again stand against high commission waterfall",
+        "Followers watch unbeatable levels",
+    )
 
     # Test Discord HMAC & Embed builder
     sample_prop = {
@@ -328,6 +343,12 @@ def main() -> int:
         pm_status.get("running") is True
         and pm_cycle["cycle"].get("mt5_connected") is True
         and "webhook_url" in discord_cfg
+        and unauth_blocked is True
+        and false_tag == "NEUTRAL"
+        and false_score == 0.0
+        and len(false_matched) == 0
+        and "daily_total_pnl_pct" in risk_st
+        and "open_risk_pct" in risk_st
         and verify_discord_action_token(999, "confirm", tok_confirm) is True
         and verify_discord_action_token(999, "confirm", "invalid-token") is False
         and "action=confirm" in embed_desc
@@ -344,9 +365,9 @@ def main() -> int:
         "G11_DISCORD_POS_MGR_AUTOPILOT",
         g11_features_ok,
         (
-            f"pm_running={pm_status.get('running')}, be_sl={plan_1r['new_sl']}, "
-            f"partial_lots={plan_16r['partial_close_lots']}, trail_sl={plan_16r['new_sl']}, "
-            f"actors={list(stats_res.get('by_actor', {}).keys())}"
+            f"pm_running={pm_status.get('running')}, unauth_401={unauth_blocked}, "
+            f"regex_clean={len(false_matched)==0}, daily_pnl={risk_st['daily_total_pnl_pct']}%, "
+            f"open_risk={risk_st['open_risk_pct']}%, be_sl={plan_1r['new_sl']}, trail_sl={plan_16r['new_sl']}"
         ),
     )
 

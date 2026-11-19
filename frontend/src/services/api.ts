@@ -174,12 +174,12 @@ export function createProposal(
   );
 }
 
-export function confirmProposal(id: number, allowReal = false) {
+export function confirmProposal(id: number, allowReal = false, force = false) {
   return requestJson<{ proposal: TradeProposal; execution: Record<string, unknown> }>(
     `/api/proposals/${id}/confirm`,
     {
       method: "POST",
-      body: JSON.stringify({ allow_real: allowReal }),
+      body: JSON.stringify({ allow_real: allowReal, force }),
     },
     true
   );
@@ -196,12 +196,18 @@ export function rejectProposal(id: number, reason = "") {
   );
 }
 
-export function modifyPosition(ticket: number, sl: number | null, tp: number | null, allowReal = false) {
+export function modifyPosition(
+  ticket: number,
+  sl: number | null,
+  tp: number | null,
+  priceOpen: number | null = null,
+  allowReal = false
+) {
   return requestJson<Record<string, unknown>>(
     `/api/positions/${ticket}`,
     {
       method: "PATCH",
-      body: JSON.stringify({ sl, tp, allow_real: allowReal }),
+      body: JSON.stringify({ sl, tp, price_open: priceOpen, allow_real: allowReal }),
     },
     true
   );
@@ -214,6 +220,19 @@ export function closePosition(ticket: number, lots?: number | null, allowReal = 
       method: "POST",
       body: JSON.stringify({ lots: lots ?? null, allow_real: allowReal }),
     },
+    true
+  );
+}
+
+export function panicCloseAll(allowReal = false) {
+  return requestJson<{
+    closed_positions_count: number;
+    cancelled_orders_count: number;
+    message: string;
+    errors: string[];
+  }>(
+    `/api/positions/panic-close-all?allow_real=${allowReal}`,
+    { method: "POST" },
     true
   );
 }
@@ -285,9 +304,12 @@ export function fetchNews(symbol: string, refresh = false) {
 export function evaluateGauntlet(
   symbol: string,
   tf: Timeframe,
-  riskPct = 15,
+  riskPct = 2,
   autoQueue = false,
-  minConfidencePct = 75
+  minConfidencePct = 75,
+  slAtrMult = 1.5,
+  tpAtrMult = 2.5,
+  minRrRatio = 1.5
 ) {
   return requestJson<GauntletEvaluation>(
     "/api/gauntlet/evaluate",
@@ -298,6 +320,9 @@ export function evaluateGauntlet(
         tf,
         risk_pct: riskPct,
         min_confidence_pct: minConfidencePct,
+        sl_atr_mult: slAtrMult,
+        tp_atr_mult: tpAtrMult,
+        min_rr_ratio: minRrRatio,
         auto_queue: autoQueue,
       }),
     },
@@ -322,9 +347,15 @@ export function trainMlModel(symbol: string, tf: Timeframe, bars = 10000) {
   );
 }
 
-export function fetchBacktest(symbol: string, tf: Timeframe, bars = 600) {
+export function fetchBacktest(
+  symbol: string,
+  tf: Timeframe,
+  bars = 600,
+  slAtrMult = 1.5,
+  tpAtrMult = 2.5
+) {
   return requestJson<BacktestResult>(
-    `/api/backtest?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=${bars}`
+    `/api/backtest?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=${bars}&sl_atr_mult=${slAtrMult}&tp_atr_mult=${tpAtrMult}`
   );
 }
 
@@ -362,7 +393,7 @@ export function fetchSystemLogs(params?: { category?: string; level?: string; li
 }
 
 export function fetchSheetsConfig() {
-  return requestJson<SheetsConfig>("/api/sheets/config");
+  return requestJson<SheetsConfig>("/api/sheets/config", {}, true);
 }
 
 export function saveSheetsConfig(cfg: Partial<SheetsConfig>) {
@@ -424,7 +455,7 @@ export function movePositionToBreakeven(ticket: number) {
 }
 
 export function fetchDiscordConfig() {
-  return requestJson<DiscordConfig>("/api/discord/config");
+  return requestJson<DiscordConfig>("/api/discord/config", {}, true);
 }
 
 export function saveDiscordConfig(cfg: Partial<DiscordConfig>) {

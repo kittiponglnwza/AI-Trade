@@ -12,6 +12,7 @@ from app.database import (
     add_system_log,
     create_execution_log,
     create_proposal,
+    expire_stale_proposals,
     get_watchdog_config,
     get_watchlist,
     list_proposals,
@@ -100,20 +101,28 @@ class MarketWatchdog:
                     await asyncio.to_thread(sync_watchdog_log_row, log_entry)
                     return {"scanned": 0, "results": [], "mt5_connected": False}
 
-                # 1. Sync closed MT5 deals continuously
+                # 1. Sync closed MT5 deals & periodic equity snapshot continuously
                 try:
+                    acc = await asyncio.to_thread(mt5_service.get_account_summary)
+                    record_equity_snapshot(
+                        balance=acc["balance"],
+                        equity=acc["equity"],
+                        floating_pnl=acc["profit"],
+                        margin_free=acc["margin_free"],
+                        min_interval_sec=300,
+                    )
                     deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, 30)
                     sync_res = upsert_mt5_deals(deals)
-                    if sync_res["inserted"] > 0:
+                    newly_closed = sync_res.get("newly_closed_rows") or []
+                    if newly_closed:
                         closed = list_trade_logs(status="CLOSED", limit=5000)
-                        acc = await asyncio.to_thread(mt5_service.get_account_summary)
                         stats = compute_trading_stats(closed, current_balance=acc["balance"])
                         add_system_log(
                             "INFO",
                             "SYNC",
-                            f"Auto-synced {sync_res['inserted']} newly closed MT5 trade(s)",
+                            f"Auto-synced {len(newly_closed)} newly closed MT5 trade(s)",
                         )
-                        await asyncio.to_thread(sync_trade_rows, list_trade_logs(limit=sync_res["inserted"]))
+                        await asyncio.to_thread(sync_trade_rows, newly_closed)
                         await asyncio.to_thread(sync_stats_snapshot, stats)
                 except Exception as exc:
                     add_system_log("WARN", "SYNC", f"Auto-sync deals warning: {exc}")
@@ -121,14 +130,27 @@ class MarketWatchdog:
                 # 2. Scan watchlist symbols through the 9-Gate ML + News Gauntlet
                 cfg = get_watchdog_config()
                 tf = str(cfg.get("timeframe", "M15")).upper()
-                risk_pct = float(cfg.get("risk_pct", 15.0))
+                risk_pct = float(cfg.get("risk_pct", 2.0))
                 min_conf = float(cfg.get("min_confidence_pct", 75.0))
                 auto_propose = bool(cfg.get("auto_propose", True))
                 cooldown_sec = max(60, int(cfg.get("cooldown_min", 30)) * 60)
                 autopilot_enabled = bool(cfg.get("autopilot_enabled", False))
                 autopilot_min_conf = float(cfg.get("autopilot_min_confidence_pct", 80.0))
+                autopilot_sizing_mode = str(cfg.get("autopilot_sizing_mode", "FIXED_LOT")).upper()
                 autopilot_fixed_lots = float(cfg.get("autopilot_fixed_lots", 0.01))
+                autopilot_risk_pct = float(cfg.get("autopilot_risk_pct", 1.0))
                 autopilot_max_open = int(cfg.get("autopilot_max_open_positions", 3))
+                proposal_ttl_min = int(cfg.get("proposal_ttl_min", 45))
+                max_daily_loss_pct = float(cfg.get("max_daily_loss_pct", 5.0))
+                max_open_risk_pct = float(cfg.get("max_open_risk_pct", 15.0))
+                sl_atr_mult = float(cfg.get("sl_atr_mult", 1.5))
+                tp_atr_mult = float(cfg.get("tp_atr_mult", 2.5))
+                min_rr_ratio = float(cfg.get("min_rr_ratio", 1.5))
+
+                expire_stale_proposals(proposal_ttl_min)
+                risk_status = await asyncio.to_thread(mt5_service.get_portfolio_risk_status)
+                daily_circuit_broken = risk_status["daily_total_pnl_pct"] <= -abs(max_daily_loss_pct)
+                portfolio_heat_full = risk_status["open_risk_pct"] >= abs(max_open_risk_pct)
 
                 symbols = symbols_override or get_watchlist()
                 open_positions = await asyncio.to_thread(mt5_service.get_open_positions)
@@ -139,7 +161,14 @@ class MarketWatchdog:
                 for sym in symbols:
                     try:
                         res = await asyncio.to_thread(
-                            evaluate_gauntlet, sym, tf, risk_pct, min_conf
+                            evaluate_gauntlet,
+                            sym,
+                            tf,
+                            risk_pct,
+                            min_conf,
+                            sl_atr_mult,
+                            tp_atr_mult,
+                            min_rr_ratio,
                         )
                         resolved = res["symbol"]
                         ml_info = res.get("ml") or {}
@@ -180,6 +209,20 @@ class MarketWatchdog:
                             and resolved not in open_symbols
                             and resolved not in pending_symbols
                         ):
+                            if daily_circuit_broken or portfolio_heat_full:
+                                reason_txt = (
+                                    f"Daily Loss Limit ({risk_status['daily_total_pnl_pct']:.2f}% <= -{max_daily_loss_pct:.1f}%)"
+                                    if daily_circuit_broken
+                                    else f"Max Portfolio Heat ({risk_status['open_risk_pct']:.2f}% >= {max_open_risk_pct:.1f}%)"
+                                )
+                                add_system_log(
+                                    "WARN",
+                                    "RISK_GUARD",
+                                    f"Circuit breaker blocked new {resolved} proposal: {reason_txt}",
+                                    symbol=resolved,
+                                )
+                                continue
+
                             last_prop_ts = self._last_proposed_at.get(resolved, 0.0)
                             if (time.monotonic() - last_prop_ts) >= cooldown_sec:
                                 po = res["proposed_order"]
@@ -190,7 +233,28 @@ class MarketWatchdog:
                                     and len(open_symbols) < autopilot_max_open
                                 )
                                 prop_source = "AUTOPILOT" if should_autopilot else "WATCHDOG"
-                                prop_lots = autopilot_fixed_lots if should_autopilot else po["lots"]
+                                prop_lots = po["lots"]
+                                prop_risk_pct = po["risk_pct"]
+                                prop_risk_usd = po["est_risk_usd"]
+                                prop_reward_usd = po["est_reward_usd"]
+                                prop_rr = po["rr_ratio"]
+
+                                if should_autopilot:
+                                    ap_chk = await asyncio.to_thread(
+                                        mt5_service.check_order,
+                                        po["symbol"],
+                                        po["side"],
+                                        autopilot_fixed_lots if autopilot_sizing_mode == "FIXED_LOT" else None,
+                                        autopilot_risk_pct if autopilot_sizing_mode == "RISK_PCT" else None,
+                                        None,
+                                        po["sl"],
+                                        po["tp"],
+                                    )
+                                    prop_lots = ap_chk["lots"]
+                                    prop_risk_pct = ap_chk["est_risk_pct"]
+                                    prop_risk_usd = ap_chk["est_risk_usd"]
+                                    prop_reward_usd = ap_chk["est_reward_usd"]
+                                    prop_rr = ap_chk["rr_ratio"]
 
                                 proposal = create_proposal(
                                     {
@@ -201,11 +265,11 @@ class MarketWatchdog:
                                         "entry_price": po["entry_price"],
                                         "sl": po["sl"],
                                         "tp": po["tp"],
-                                        "risk_pct": po["risk_pct"],
+                                        "risk_pct": prop_risk_pct,
                                         "lots": prop_lots,
-                                        "est_risk_usd": po["est_risk_usd"],
-                                        "est_reward_usd": po["est_reward_usd"],
-                                        "rr_ratio": po["rr_ratio"],
+                                        "est_risk_usd": prop_risk_usd,
+                                        "est_reward_usd": prop_reward_usd,
+                                        "rr_ratio": prop_rr,
                                         "rationale": po["rationale"],
                                         "timeframe": po["timeframe"],
                                         "gauntlet": {
