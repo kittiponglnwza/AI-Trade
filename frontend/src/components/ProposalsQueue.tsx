@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, Check, Clock, ShieldAlert, X } from "lucide-react";
+import { AlertCircle, Check, Clock, ShieldAlert, Sparkles, X } from "lucide-react";
 import { confirmProposal, rejectProposal } from "../services/api";
 import type { AccountSummary, TradeProposal } from "../types/trading";
 
@@ -15,7 +15,7 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const pending = proposals.filter((p) => p.status === "PENDING");
-  const recent = proposals.filter((p) => p.status !== "PENDING").slice(0, 4);
+  const recent = proposals.filter((p) => p.status !== "PENDING").slice(0, 5);
 
   const handleConfirm = async () => {
     if (!confirmTarget) return;
@@ -26,7 +26,8 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
       setConfirmTarget(null);
       onUpdated();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to execute proposal");
+      setErrorMsg(err instanceof Error ? err.message : "ส่งคำสั่งไม่สำเร็จ");
+      setConfirmTarget(null);
     } finally {
       setBusyId(null);
     }
@@ -39,92 +40,114 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
       await rejectProposal(id, "Rejected from Web Dashboard");
       onUpdated();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to reject proposal");
+      setErrorMsg(err instanceof Error ? err.message : "ปฏิเสธแผนไม่สำเร็จ");
     } finally {
       setBusyId(null);
     }
   };
 
   return (
-    <div className="rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4">
-      <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between border-b border-[#2b2b2b] pb-2.5">
         <div className="flex items-center gap-2">
-          <Clock className="h-4 w-4 text-amber-400" />
-          <h2 className="text-sm font-semibold text-slate-100">
-            Pending Confirmation Queue ({pending.length})
+          <Sparkles className="h-4 w-4 text-[#4fc1ff]" />
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[#e1e1e1]">
+            AI Confirmation Queue ({pending.length})
           </h2>
         </div>
-        <span className="text-[11px] text-slate-400">Requires your approval</span>
+        <span className="text-[11px] text-[#9d9d9d]">กดยืนยันเพื่อยิงเข้า MT5</span>
       </div>
 
+      {account && !account.terminal_trade_allowed && pending.length > 0 && (
+        <div className="flex items-start gap-2 rounded border border-[#cca700]/50 bg-[#cca700]/10 p-2.5 text-xs text-[#dcdcaa] break-words">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#dcdcaa]" />
+          <span>
+            ปุ่ม <strong>Algo Trading</strong> บน MT5 ยังปิดอยู่ (`OFF`) — กรุณากดเปิดเป็นสีเขียวบน MT5 ก่อนกด{" "}
+            <strong>Confirm & Execute</strong>
+          </span>
+        </div>
+      )}
+
       {errorMsg && (
-        <div className="mt-3 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-300">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{errorMsg}</span>
+        <div className="flex items-start gap-2 rounded border border-[#f14c4c]/40 bg-[#5a1d1d]/40 p-2.5 text-xs text-[#f48771] break-words whitespace-pre-wrap overflow-hidden">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#f14c4c]" />
+          <span className="min-w-0 flex-1 break-words">{errorMsg}</span>
         </div>
       )}
 
       {pending.length === 0 ? (
-        <div className="mt-3 rounded-xl border border-dashed border-slate-800 bg-slate-950/40 px-4 py-6 text-center text-xs text-slate-500">
-          No pending proposals right now. Queue one from the Order Planner or push from AI/CLI.
+        <div className="rounded border border-dashed border-[#3c3c3c] bg-[#1e1e1e] px-4 py-7 text-center text-xs text-[#9d9d9d]">
+          <Clock className="mx-auto mb-2 h-5 w-5 text-[#6e6e6e]" />
+          <p className="text-[#cccccc]">ยังไม่มีแผนเทรดรอกดยืนยัน</p>
+          <p className="mt-1 text-[11px] text-[#6e6e6e]">
+            สั่งให้ AI วิเคราะห์ในแชท หรือสลับไปแท็บ &ldquo;วางแผนเอง&rdquo; ด้านบน
+          </p>
         </div>
       ) : (
-        <div className="mt-3 space-y-2.5">
+        <div className="space-y-2.5">
           {pending.map((p) => {
             const isBuy = p.side.startsWith("BUY");
             return (
               <div
                 key={p.id}
-                className="rounded-xl border border-amber-500/30 bg-slate-950/90 p-3 shadow-sm"
+                className="rounded border border-[#007acc]/70 bg-[#1e1e1e] p-3"
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span
                       className={`rounded px-2 py-0.5 text-[11px] font-bold ${
-                        isBuy ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"
+                        isBuy
+                          ? "bg-[#3fb950]/15 text-[#3fb950] border border-[#3fb950]/30"
+                          : "bg-[#f14c4c]/15 text-[#f14c4c] border border-[#f14c4c]/30"
                       }`}
                     >
                       {p.side}
                     </span>
-                    <span className="text-sm font-bold text-slate-100 tabular-nums">
+                    <span className="font-mono-num text-sm font-bold text-[#e1e1e1]">
                       {p.lots.toFixed(2)} {p.symbol}
                     </span>
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+                    <span className="rounded border border-[#3c3c3c] bg-[#252526] px-1.5 py-0.5 text-[10px] font-medium text-[#4fc1ff]">
                       {p.source} · {p.timeframe}
                     </span>
                   </div>
-                  <span className="text-[11px] text-slate-500">#{p.id}</span>
+                  <span className="font-mono-num text-[11px] text-[#6e6e6e]">#{p.id}</span>
                 </div>
 
-                <div className="mt-2 grid grid-cols-3 gap-2 rounded-lg bg-slate-900/90 px-2.5 py-1.5 text-[11px] tabular-nums">
+                <div className="font-mono-num mt-2.5 grid grid-cols-3 gap-2 rounded border border-[#2b2b2b] bg-[#252526] px-2.5 py-2 text-[11px]">
                   <div>
-                    <span className="text-slate-500">Entry </span>
-                    <strong className="text-slate-200">{p.entry_price}</strong>
+                    <div className="text-[10px] text-[#9d9d9d]">ENTRY</div>
+                    <strong className="text-[#e1e1e1]">{p.entry_price}</strong>
                   </div>
                   <div>
-                    <span className="text-slate-500">SL </span>
-                    <strong className="text-rose-300">{p.sl ?? "—"}</strong>
+                    <div className="text-[10px] text-[#9d9d9d]">SL</div>
+                    <strong className="text-[#f14c4c]">{p.sl ?? "—"}</strong>
                   </div>
                   <div>
-                    <span className="text-slate-500">TP </span>
-                    <strong className="text-emerald-300">{p.tp ?? "—"}</strong>
+                    <div className="text-[10px] text-[#9d9d9d]">TP</div>
+                    <strong className="text-[#3fb950]">{p.tp ?? "—"}</strong>
                   </div>
                 </div>
 
-                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400 tabular-nums">
+                <div className="font-mono-num mt-2 flex items-center justify-between text-[11px] text-[#9d9d9d]">
                   <span>
                     Risk:{" "}
-                    <strong className="text-rose-300">
-                      ${p.est_risk_usd.toFixed(2)} ({p.risk_pct?.toFixed(1) ?? "?"}%)
+                    <strong className="text-[#f14c4c]">
+                      -${p.est_risk_usd.toFixed(2)} ({p.risk_pct?.toFixed(1) ?? "?"}%)
                     </strong>
                   </span>
                   <span>
-                    R:R <strong className="text-amber-300">{p.rr_ratio ? `1:${p.rr_ratio}` : "—"}</strong>
+                    Reward:{" "}
+                    <strong className="text-[#3fb950]">+${p.est_reward_usd.toFixed(2)}</strong>
+                  </span>
+                  <span>
+                    R:R <strong className="text-[#dcdcaa]">{p.rr_ratio ? `1:${p.rr_ratio}` : "—"}</strong>
                   </span>
                 </div>
 
                 {p.rationale && (
-                  <p className="mt-1.5 text-[11px] text-slate-300 line-clamp-2">{p.rationale}</p>
+                  <p className="mt-2 rounded border border-[#2b2b2b] bg-[#181818] p-2 text-[11px] leading-relaxed text-[#cccccc] break-words">
+                    {p.rationale}
+                  </p>
                 )}
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -132,7 +155,7 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                     type="button"
                     disabled={busyId === p.id}
                     onClick={() => handleReject(p.id)}
-                    className="flex items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-700 disabled:opacity-50"
+                    className="flex items-center justify-center gap-1 rounded border border-[#3c3c3c] bg-[#313131] py-2 text-xs font-medium text-[#cccccc] transition hover:bg-[#3c3c3c] hover:text-white disabled:opacity-50"
                   >
                     <X className="h-3.5 w-3.5" />
                     Reject
@@ -141,7 +164,7 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                     type="button"
                     disabled={busyId === p.id}
                     onClick={() => setConfirmTarget(p)}
-                    className="flex items-center justify-center gap-1 rounded-lg bg-emerald-500 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
+                    className="flex items-center justify-center gap-1.5 rounded bg-[#238636] py-2 text-xs font-semibold text-white transition hover:bg-[#2ea043] disabled:opacity-50"
                   >
                     <Check className="h-3.5 w-3.5" />
                     Confirm & Execute
@@ -154,13 +177,15 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
       )}
 
       {recent.length > 0 && (
-        <div className="mt-4 border-t border-slate-800 pt-3">
-          <div className="mb-1.5 text-[11px] font-medium text-slate-400">Recent Proposal Activity</div>
+        <div className="border-t border-[#2b2b2b] pt-2.5">
+          <div className="mb-1.5 text-[11px] font-medium text-[#9d9d9d]">
+            Recent Proposal Activity
+          </div>
           <div className="space-y-1">
             {recent.map((p) => (
               <div
                 key={p.id}
-                className="flex items-center justify-between rounded-lg bg-slate-950/60 px-2.5 py-1.5 text-[11px] text-slate-400"
+                className="font-mono-num flex items-center justify-between rounded border border-[#2b2b2b] bg-[#1e1e1e] px-2.5 py-1.5 text-[11px] text-[#9d9d9d]"
               >
                 <span>
                   #{p.id} {p.side} {p.lots} {p.symbol}
@@ -168,10 +193,10 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                 <span
                   className={
                     p.status === "EXECUTED"
-                      ? "text-emerald-400 font-semibold"
+                      ? "font-semibold text-[#3fb950]"
                       : p.status === "REJECTED"
-                      ? "text-slate-500"
-                      : "text-rose-400"
+                      ? "text-[#6e6e6e]"
+                      : "text-[#f14c4c]"
                   }
                 >
                   {p.status}
@@ -183,45 +208,48 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
       )}
 
       {confirmTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-5 shadow-2xl">
-            <div className="flex items-center gap-2 text-amber-300">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+          <div className="w-full max-w-md rounded-md border border-[#3c3c3c] bg-[#252526] p-5 shadow-2xl">
+            <div className="flex items-center gap-2 text-[#4fc1ff]">
               <ShieldAlert className="h-5 w-5" />
-              <h3 className="text-base font-bold">Confirm MT5 Order Execution</h3>
+              <h3 className="text-sm font-semibold text-[#e1e1e1]">
+                ยืนยันส่งคำสั่งเข้า MetaTrader 5
+              </h3>
             </div>
-            <p className="mt-2 text-xs text-slate-300">
-              You are about to send a live order to MetaTrader 5:
+            <p className="mt-2 text-xs text-[#9d9d9d]">
+              กรุณาตรวจสอบรายละเอียดก่อนกด Execute:
             </p>
-            <div className="mt-3 space-y-1.5 rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs tabular-nums">
+            <div className="font-mono-num mt-3 space-y-1.5 rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs">
               <div className="flex justify-between">
-                <span className="text-slate-400">Account Mode:</span>
-                <strong className="text-sky-300">{account?.trade_mode ?? "UNKNOWN"}</strong>
+                <span className="text-[#9d9d9d]">Account Mode:</span>
+                <strong className="text-[#4fc1ff]">{account?.trade_mode ?? "UNKNOWN"}</strong>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Order:</span>
-                <strong className="text-slate-100">
+                <span className="text-[#9d9d9d]">Order:</span>
+                <strong className="text-[#e1e1e1]">
                   {confirmTarget.side} {confirmTarget.lots.toFixed(2)} {confirmTarget.symbol} @{" "}
                   {confirmTarget.entry_price}
                 </strong>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">SL / TP:</span>
-                <strong className="text-slate-200">
-                  {confirmTarget.sl ?? "—"} / {confirmTarget.tp ?? "—"}
+                <span className="text-[#9d9d9d]">SL / TP:</span>
+                <strong className="text-[#e1e1e1]">
+                  <span className="text-[#f14c4c]">{confirmTarget.sl ?? "—"}</span> /{" "}
+                  <span className="text-[#3fb950]">{confirmTarget.tp ?? "—"}</span>
                 </strong>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Estimated Risk:</span>
-                <strong className="text-rose-300">
-                  ${confirmTarget.est_risk_usd.toFixed(2)} (
+                <span className="text-[#9d9d9d]">Estimated Risk:</span>
+                <strong className="text-[#f14c4c]">
+                  -${confirmTarget.est_risk_usd.toFixed(2)} (
                   {confirmTarget.risk_pct?.toFixed(1) ?? "?"}%)
                 </strong>
               </div>
             </div>
 
             {account && !account.terminal_trade_allowed && (
-              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/15 p-2.5 text-xs text-amber-200">
-                Warning: MT5 Terminal <strong>Algo Trading</strong> is currently OFF. Please toggle it ON in MT5 before clicking Execute.
+              <div className="mt-3 rounded border border-[#cca700]/50 bg-[#cca700]/10 p-2.5 text-xs text-[#dcdcaa]">
+                คำเตือน: MT5 <strong>Algo Trading</strong> ยังเป็น OFF กรุณากดเปิดเป็นสีเขียวบน MT5 ก่อน
               </div>
             )}
 
@@ -229,7 +257,7 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
               <button
                 type="button"
                 onClick={() => setConfirmTarget(null)}
-                className="rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-300 hover:bg-slate-700"
+                className="rounded border border-[#3c3c3c] bg-[#313131] px-3.5 py-1.5 text-xs font-medium text-[#cccccc] hover:bg-[#3c3c3c]"
               >
                 Cancel
               </button>
@@ -237,7 +265,7 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                 type="button"
                 disabled={busyId === confirmTarget.id}
                 onClick={handleConfirm}
-                className="rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                className="rounded bg-[#238636] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#2ea043] disabled:opacity-50"
               >
                 {busyId === confirmTarget.id ? "Sending..." : "Execute in MT5"}
               </button>

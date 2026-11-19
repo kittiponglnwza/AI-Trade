@@ -83,8 +83,21 @@ async function requestJson<T>(path: string, init: RequestInit = {}, includeApiKe
     let message = `HTTP ${res.status}`;
     try {
       const errBody = await res.json();
-      if (errBody?.detail) {
-        message = typeof errBody.detail === "string" ? errBody.detail : JSON.stringify(errBody.detail);
+      if (typeof errBody?.detail === "string") {
+        message = errBody.detail;
+      } else if (Array.isArray(errBody?.detail)) {
+        const items = errBody.detail
+          .map((item: { msg?: string; loc?: unknown[] }) => {
+            const raw = String(item?.msg ?? "").replace(/^Value error,\s*/i, "").trim();
+            if (/sl is required when sizing by risk_pct/i.test(raw)) {
+              return "กรุณากรอก Stop Loss (SL) ก่อนคำนวณ Lot ตาม Risk %";
+            }
+            if (raw) return raw;
+            const field = Array.isArray(item?.loc) ? item.loc[item.loc.length - 1] : "";
+            return field ? `ข้อมูลไม่ถูกต้อง: ${String(field)}` : "";
+          })
+          .filter(Boolean);
+        if (items.length > 0) message = items.join(" · ");
       }
     } catch {
       const txt = await res.text();

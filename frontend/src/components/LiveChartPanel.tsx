@@ -57,22 +57,22 @@ export function LiveChartPanel({
 
     const chart = createChart(el, {
       layout: {
-        background: { color: "#0b1120" },
-        textColor: "#94a3b8",
+        background: { color: "#1e1e1e" },
+        textColor: "#9d9d9d",
       },
       grid: {
-        vertLines: { color: "#1e293b" },
-        horzLines: { color: "#1e293b" },
+        vertLines: { color: "#282828" },
+        horzLines: { color: "#282828" },
       },
       crosshair: {
-        vertLine: { color: "#475569", style: LineStyle.Dashed },
-        horzLine: { color: "#475569", style: LineStyle.Dashed },
+        vertLine: { color: "#555555", style: LineStyle.Dashed },
+        horzLine: { color: "#555555", style: LineStyle.Dashed },
       },
       rightPriceScale: {
-        borderColor: "#1e293b",
+        borderColor: "#2b2b2b",
       },
       timeScale: {
-        borderColor: "#1e293b",
+        borderColor: "#2b2b2b",
         timeVisible: true,
         secondsVisible: false,
       },
@@ -81,28 +81,28 @@ export function LiveChartPanel({
     });
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: "#10b981",
-      downColor: "#f43f5e",
-      borderUpColor: "#10b981",
-      borderDownColor: "#f43f5e",
-      wickUpColor: "#10b981",
-      wickDownColor: "#f43f5e",
+      upColor: "#3fb950",
+      downColor: "#f14c4c",
+      borderUpColor: "#3fb950",
+      borderDownColor: "#f14c4c",
+      wickUpColor: "#3fb950",
+      wickDownColor: "#f14c4c",
     });
 
     const ema20Series = chart.addLineSeries({
-      color: "#fbbf24",
+      color: "#dcdcaa",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const ema50Series = chart.addLineSeries({
-      color: "#22d3ee",
+      color: "#4fc1ff",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const ema200Series = chart.addLineSeries({
-      color: "#c084fc",
+      color: "#c586c0",
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
@@ -216,7 +216,7 @@ export function LiveChartPanel({
       priceLinesRef.current.push(
         series.createPriceLine({
           price: pos.price_open,
-          color: "#38bdf8",
+          color: "#4fc1ff",
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
@@ -227,7 +227,7 @@ export function LiveChartPanel({
         priceLinesRef.current.push(
           series.createPriceLine({
             price: pos.sl,
-            color: "#fb7185",
+            color: "#f14c4c",
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
             axisLabelVisible: true,
@@ -239,7 +239,7 @@ export function LiveChartPanel({
         priceLinesRef.current.push(
           series.createPriceLine({
             price: pos.tp,
-            color: "#34d399",
+            color: "#3fb950",
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
             axisLabelVisible: true,
@@ -254,7 +254,7 @@ export function LiveChartPanel({
         priceLinesRef.current.push(
           series.createPriceLine({
             price: previewLevels.entry,
-            color: "#f59e0b",
+            color: "#007acc",
             lineWidth: 2,
             lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
@@ -266,7 +266,7 @@ export function LiveChartPanel({
         priceLinesRef.current.push(
           series.createPriceLine({
             price: previewLevels.sl,
-            color: "#f43f5e",
+            color: "#f14c4c",
             lineWidth: 2,
             lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
@@ -278,7 +278,7 @@ export function LiveChartPanel({
         priceLinesRef.current.push(
           series.createPriceLine({
             price: previewLevels.tp,
-            color: "#10b981",
+            color: "#3fb950",
             lineWidth: 2,
             lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
@@ -292,18 +292,18 @@ export function LiveChartPanel({
   const latestCandle = lastBar ?? candles[candles.length - 1] ?? null;
 
   return (
-    <div className="rounded-2xl border border-slate-800/90 bg-slate-900/70 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
-        <div className="flex flex-wrap items-center gap-1.5">
+    <div className="rounded-md border border-[#2b2b2b] bg-[#252526] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] pb-2.5">
+        <div className="flex flex-wrap items-center gap-1">
           {TIMEFRAMES.map((tf) => (
             <button
               key={tf}
               type="button"
               onClick={() => onTimeframeChange(tf)}
-              className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+              className={`rounded px-2.5 py-1 text-xs font-semibold transition ${
                 timeframe === tf
-                  ? "bg-amber-500 text-slate-950"
-                  : "border border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800"
+                  ? "bg-[#007acc] text-white"
+                  : "border border-[#3c3c3c] bg-[#1e1e1e] text-[#9d9d9d] hover:bg-[#2a2d2e] hover:text-[#e1e1e1]"
               }`}
             >
               {tf}
@@ -312,73 +312,73 @@ export function LiveChartPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex cursor-pointer items-center gap-1.5 text-amber-300">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[#dcdcaa]">
             <input
               type="checkbox"
               checked={showEma20}
               onChange={(e) => setShowEma20(e.target.checked)}
-              className="accent-amber-400"
+              className="accent-[#007acc]"
             />
             EMA20
           </label>
-          <label className="flex cursor-pointer items-center gap-1.5 text-cyan-300">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[#4fc1ff]">
             <input
               type="checkbox"
               checked={showEma50}
               onChange={(e) => setShowEma50(e.target.checked)}
-              className="accent-cyan-400"
+              className="accent-[#007acc]"
             />
             EMA50
           </label>
-          <label className="flex cursor-pointer items-center gap-1.5 text-purple-300">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[#c586c0]">
             <input
               type="checkbox"
               checked={showEma200}
               onChange={(e) => setShowEma200(e.target.checked)}
-              className="accent-purple-400"
+              className="accent-[#007acc]"
             />
             EMA200
           </label>
           {latestCandle?.rsi14 != null && (
-            <span className="rounded-md border border-slate-700 bg-slate-950 px-2 py-0.5 text-slate-300 tabular-nums">
-              RSI14: <strong className="text-sky-300">{latestCandle.rsi14.toFixed(1)}</strong>
+            <span className="font-mono-num rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-0.5 text-[#9d9d9d]">
+              RSI14: <strong className="text-[#4fc1ff]">{latestCandle.rsi14.toFixed(1)}</strong>
             </span>
           )}
           {latestCandle?.atr14 != null && (
-            <span className="rounded-md border border-slate-700 bg-slate-950 px-2 py-0.5 text-slate-300 tabular-nums">
-              ATR14: <strong className="text-amber-300">${latestCandle.atr14.toFixed(2)}</strong>
+            <span className="font-mono-num rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-0.5 text-[#9d9d9d]">
+              ATR14: <strong className="text-[#dcdcaa]">${latestCandle.atr14.toFixed(2)}</strong>
             </span>
           )}
         </div>
       </div>
 
-      <div ref={containerRef} className="mt-3 w-full overflow-hidden rounded-xl border border-slate-800/70" />
+      <div ref={containerRef} className="mt-2.5 w-full overflow-hidden rounded border border-[#2b2b2b]" />
 
       {mtf.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {mtf.map((row) => {
             const isBull = row.trend.includes("BULL");
             const isBear = row.trend.includes("BEAR");
             return (
               <div
                 key={row.tf}
-                className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2"
+                className="rounded border border-[#2b2b2b] bg-[#1e1e1e] px-2.5 py-1.5"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-200">{row.tf}</span>
+                  <span className="text-xs font-bold text-[#e1e1e1]">{row.tf}</span>
                   <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                       isBull
-                        ? "bg-emerald-500/15 text-emerald-300"
+                        ? "bg-[#3fb950]/15 text-[#3fb950]"
                         : isBear
-                        ? "bg-rose-500/15 text-rose-300"
-                        : "bg-slate-700/40 text-slate-300"
+                        ? "bg-[#f14c4c]/15 text-[#f14c4c]"
+                        : "bg-[#313131] text-[#cccccc]"
                     }`}
                   >
                     {row.trend.replace(" (ABOVE EMA200)", "").replace(" (BELOW EMA200)", "")}
                   </span>
                 </div>
-                <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 tabular-nums">
+                <div className="font-mono-num mt-1 flex items-center justify-between text-[11px] text-[#9d9d9d]">
                   <span>RSI {row.rsi14.toFixed(1)}</span>
                   <span>ATR ${row.atr14.toFixed(2)}</span>
                 </div>

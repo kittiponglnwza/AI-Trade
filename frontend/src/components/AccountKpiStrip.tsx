@@ -21,75 +21,75 @@ export function AccountKpiStrip({
 
   const pnl = account?.profit ?? 0;
   const pnlColor =
-    pnl > 0 ? "text-emerald-400" : pnl < 0 ? "text-rose-400" : "text-slate-200";
+    pnl > 0 ? "text-[#3fb950]" : pnl < 0 ? "text-[#f14c4c]" : "text-[#e1e1e1]";
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-      <div className="rounded-xl border border-slate-800/90 bg-slate-900/70 p-3.5">
-        <div className="flex items-center justify-between text-xs text-slate-400">
+    <div className="grid grid-cols-2 overflow-hidden rounded-md border border-[#2b2b2b] bg-[#252526] sm:grid-cols-3 lg:grid-cols-5 lg:divide-x lg:divide-[#2b2b2b]">
+      <div className="border-b border-[#2b2b2b] px-3.5 py-2.5 lg:border-b-0">
+        <div className="flex items-center justify-between text-[11px] text-[#9d9d9d]">
           <span>Balance</span>
-          <Wallet className="h-4 w-4 text-slate-500" />
+          <Wallet className="h-3.5 w-3.5 text-[#6e6e6e]" />
         </div>
-        <div className="mt-1.5 text-lg font-bold text-slate-100 tabular-nums">
+        <div className="font-mono-num mt-1 text-base font-semibold text-[#e1e1e1]">
           {fmtMoney(account?.balance)}
         </div>
-        <div className="mt-0.5 text-[11px] text-slate-500">
+        <div className="text-[11px] text-[#6e6e6e]">
           {account ? `${account.currency} · 1:${account.leverage}` : "Not connected"}
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-800/90 bg-slate-900/70 p-3.5">
-        <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="border-b border-l border-[#2b2b2b] px-3.5 py-2.5 sm:border-l lg:border-b-0">
+        <div className="flex items-center justify-between text-[11px] text-[#9d9d9d]">
           <span>Equity</span>
-          <DollarSign className="h-4 w-4 text-amber-400/70" />
+          <DollarSign className="h-3.5 w-3.5 text-[#4fc1ff]" />
         </div>
-        <div className="mt-1.5 text-lg font-bold text-slate-100 tabular-nums">
+        <div className="font-mono-num mt-1 text-base font-semibold text-[#e1e1e1]">
           {fmtMoney(account?.equity)}
         </div>
-        <div className="mt-0.5 text-[11px] text-slate-500">
+        <div className="text-[11px] text-[#6e6e6e]">
           Margin Used: {fmtMoney(account?.margin)}
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-800/90 bg-slate-900/70 p-3.5">
-        <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="border-b border-[#2b2b2b] px-3.5 py-2.5 sm:border-l lg:border-b-0">
+        <div className="flex items-center justify-between text-[11px] text-[#9d9d9d]">
           <span>Floating P/L</span>
-          <TrendingUp className="h-4 w-4 text-slate-500" />
+          <TrendingUp className="h-3.5 w-3.5 text-[#6e6e6e]" />
         </div>
-        <div className={`mt-1.5 text-lg font-bold tabular-nums ${pnlColor}`}>
+        <div className={`font-mono-num mt-1 text-base font-semibold ${pnlColor}`}>
           {account ? `${pnl >= 0 ? "+" : ""}${fmtMoney(pnl)}` : "—"}
         </div>
-        <div className="mt-0.5 text-[11px] text-slate-500">
-          Live Open P/L
-        </div>
+        <div className="text-[11px] text-[#6e6e6e]">Live Open P/L</div>
       </div>
 
-      <div className="rounded-xl border border-slate-800/90 bg-slate-900/70 p-3.5">
-        <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="border-b border-l border-[#2b2b2b] px-3.5 py-2.5 lg:border-b-0">
+        <div className="flex items-center justify-between text-[11px] text-[#9d9d9d]">
           <span>Free Margin</span>
-          <Shield className="h-4 w-4 text-sky-400/70" />
+          <Shield className="h-3.5 w-3.5 text-[#4ec9b0]" />
         </div>
-        <div className="mt-1.5 text-lg font-bold text-slate-100 tabular-nums">
+        <div className="font-mono-num mt-1 text-base font-semibold text-[#e1e1e1]">
           {fmtMoney(account?.margin_free)}
         </div>
-        <div className="mt-0.5 text-[11px] text-slate-500">
+        <div className="text-[11px] text-[#6e6e6e]">
           Level: {account && account.margin > 0 ? `${account.margin_level.toFixed(1)}%` : "∞"}
         </div>
       </div>
 
-      <div className="col-span-2 rounded-xl border border-slate-800/90 bg-slate-900/70 p-3.5 sm:col-span-1">
-        <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="col-span-2 px-3.5 py-2.5 sm:col-span-1">
+        <div className="flex items-center justify-between text-[11px] text-[#9d9d9d]">
           <span>Queue & Exposure</span>
-          <Layers className="h-4 w-4 text-amber-400/80" />
+          <Layers className="h-3.5 w-3.5 text-[#dcdcaa]" />
         </div>
-        <div className="mt-1.5 flex items-baseline gap-2 text-lg font-bold text-slate-100 tabular-nums">
+        <div className="font-mono-num mt-1 flex items-baseline gap-1.5 text-base font-semibold text-[#e1e1e1]">
           <span>{openPositionsCount} Open</span>
-          <span className="text-xs font-medium text-slate-400">
-            / {pendingOrdersCount} Limit
-          </span>
+          <span className="text-xs font-normal text-[#9d9d9d]">/ {pendingOrdersCount} Limit</span>
         </div>
-        <div className="mt-0.5 text-[11px] text-amber-300/90">
-          {pendingProposalsCount} pending confirmation{pendingProposalsCount === 1 ? "" : "s"}
+        <div
+          className={`text-[11px] ${
+            pendingProposalsCount > 0 ? "font-medium text-[#4fc1ff]" : "text-[#6e6e6e]"
+          }`}
+        >
+          {pendingProposalsCount} AI proposal{pendingProposalsCount === 1 ? "" : "s"} pending
         </div>
       </div>
     </div>

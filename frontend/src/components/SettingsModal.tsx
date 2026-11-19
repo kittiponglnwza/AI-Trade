@@ -49,72 +49,63 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+      <div className="w-full max-w-lg rounded-md border border-[#3c3c3c] bg-[#252526] p-5 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[#2b2b2b] pb-3">
           <div className="flex items-center gap-2">
-            <Plug className="h-5 w-5 text-amber-400" />
-            <h2 className="text-base font-semibold text-slate-100">
-              MT5 Local Bridge Settings
-            </h2>
+            <Plug className="h-4 w-4 text-[#4fc1ff]" />
+            <h2 className="text-sm font-semibold text-[#e1e1e1]">MT5 Local Bridge Settings</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+            className="rounded p-1 text-[#9d9d9d] hover:bg-[#313131] hover:text-white"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="mt-4 space-y-4">
+        <div className="mt-4 space-y-3.5">
           <div>
-            <label className="block text-xs font-medium text-slate-300">
-              Bridge API URL (Local or Cloudflare/ngrok HTTPS Tunnel)
+            <label className="block text-xs font-medium text-[#cccccc]">
+              Bridge API URL (Local หรือ Cloudflare/ngrok Tunnel)
             </label>
             <input
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="http://localhost:8000 or https://xxx.trycloudflare.com"
-              className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+              placeholder="http://localhost:8000 หรือ https://xxx.trycloudflare.com"
+              className="font-mono-num mt-1.5 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#e1e1e1] placeholder-[#6e6e6e] focus:border-[#007fd4] focus:outline-none"
             />
-            <p className="mt-1 text-[11px] text-slate-400">
-              Leave empty in local dev to use Vite proxy (<code className="text-slate-300">/api</code>).
-            </p>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300">
-              X-API-Key (Matches <code className="text-amber-300">MT5_API_KEY</code> in backend/.env)
+            <label className="block text-xs font-medium text-[#cccccc]">
+              X-API-Key (ตรงกับ <code className="text-[#dcdcaa]">MT5_API_KEY</code> ใน backend/.env)
             </label>
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="mt5-local-dev-key"
-              className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+              className="font-mono-num mt-1.5 w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#e1e1e1] placeholder-[#6e6e6e] focus:border-[#007fd4] focus:outline-none"
             />
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-300">
-            <div className="font-semibold text-amber-300">
-              Connecting from Vercel HTTPS?
-            </div>
-            <p className="mt-1 text-slate-400">
-              Run this on your Windows PC alongside MT5 to expose a secure HTTPS/WSS tunnel:
-            </p>
-            <pre className="mt-2 overflow-x-auto rounded bg-slate-900 px-2.5 py-1.5 text-[11px] text-emerald-300">
-              cloudflared tunnel --url http://localhost:8000
+          <div className="rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs text-[#9d9d9d]">
+            <div className="font-semibold text-[#4fc1ff]">เชื่อมต่อจาก Vercel HTTPS:</div>
+            <p className="mt-1">รัน Tunnel บนเครื่อง Windows ที่เปิด MT5 อยู่:</p>
+            <pre className="font-mono-num mt-2 overflow-x-auto rounded border border-[#2b2b2b] bg-[#181818] px-2.5 py-1.5 text-[11px] text-[#4ec9b0]">
+              cloudflared tunnel --url http://127.0.0.1:8000
             </pre>
           </div>
 
           {testResult && (
             <div
-              className={`flex items-start gap-2 rounded-lg border p-3 text-xs ${
+              className={`flex items-start gap-2 rounded border p-3 text-xs break-words ${
                 testResult.ok
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                  ? "border-[#3fb950]/40 bg-[#1e3a29]/40 text-[#3fb950]"
+                  : "border-[#f14c4c]/40 bg-[#5a1d1d]/40 text-[#f48771]"
               }`}
             >
               {testResult.ok ? (
@@ -127,19 +118,19 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
           )}
         </div>
 
-        <div className="mt-6 flex items-center justify-end gap-2 border-t border-slate-800 pt-4">
+        <div className="mt-5 flex items-center justify-end gap-2 border-t border-[#2b2b2b] pt-4">
           <button
             type="button"
             onClick={handleTest}
             disabled={testing}
-            className="rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
+            className="rounded border border-[#3c3c3c] bg-[#313131] px-3.5 py-1.5 text-xs font-medium text-[#cccccc] transition hover:bg-[#3c3c3c] disabled:opacity-50"
           >
             {testing ? "Testing..." : "Test Connection"}
           </button>
           <button
             type="button"
             onClick={handleSave}
-            className="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+            className="rounded bg-[#007acc] px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-[#1f8ad2]"
           >
             Save & Reconnect
           </button>
