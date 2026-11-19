@@ -206,6 +206,8 @@ export interface MLReport {
   ml_conviction_pct?: number;
   news_adjustment_pct: number;
   mtf_bonus_pct: number;
+  day_trader_bonus_pct?: number;
+  time_machine_bonus_pct?: number;
   final_confidence_pct: number;
   min_confidence_pct: number;
   meets_threshold: boolean;
@@ -244,6 +246,89 @@ export interface GauntletGate {
   detail: string;
 }
 
+export interface DayTraderSetupItem {
+  id: string;
+  label: string;
+  status: "TRIGGERED" | "FORMING_POKE" | "WAIT" | string;
+  side: "BUY" | "SELL" | "NONE" | string;
+  stop_rule: string;
+  stop_price: number | null;
+  detail: string;
+}
+
+export interface DayTraderReport {
+  active_setup: string;
+  active_setup_label: string;
+  active_setup_side?: string;
+  triggered_count: number;
+  entry_timer_state: "TRIGGERED_ON_CLOSED_BAR" | "FORMING_BAR_POKE_WAIT" | "WAITING" | string;
+  entry_timer_detail: string;
+  recommended_stop_rule: string;
+  recommended_stop_price: number | null;
+  setup_score_bonus_pct: number;
+  opening_range: {
+    or_high?: number;
+    or_low?: number;
+    or_mid?: number;
+    or_width?: number;
+    session_vwap?: number;
+    vol_ratio_x?: number;
+    session_bars?: number;
+  };
+  setups: DayTraderSetupItem[];
+}
+
+export interface TimeMachineReport {
+  replays: number;
+  seed: number;
+  horizon_bars: number;
+  target_r: number;
+  target_first_pct: number;
+  stop_first_pct: number;
+  neither_pct: number;
+  green_at_close_pct: number;
+  resolved_win_rate_pct: number;
+  breakeven_win_rate_pct: number;
+  edge_vs_breakeven_pp: number;
+  expected_r: number;
+  verdict: "STRONGLY_TARGET" | "LEANS_TARGET" | "COIN_FLIP" | "LEANS_STOP" | string;
+  verdict_th: string;
+  tm_confidence_bonus_pct: number;
+  price_percentiles: {
+    p5?: number;
+    p25?: number;
+    p50_median?: number;
+    p75?: number;
+    p95?: number;
+  };
+  fan_chart: {
+    bar: number;
+    p10: number;
+    p25: number;
+    p50: number;
+    p75: number;
+    p90: number;
+  }[];
+}
+
+export interface WatchlistScannerItem {
+  symbol: string;
+  tf: string;
+  bid: number;
+  trend: string;
+  active_setup: string;
+  active_setup_label: string;
+  active_setup_side: string;
+  triggered_count: number;
+  entry_timer_state: string;
+  entry_timer_detail: string;
+  vol_ratio_x: number;
+  or_high: number;
+  or_low: number;
+  or_mid: number;
+  session_vwap: number;
+}
+
 export interface GauntletEvaluation {
   symbol: string;
   timeframe: string;
@@ -259,6 +344,8 @@ export interface GauntletEvaluation {
   mtf_snapshot: MtfSummaryRow[];
   gates: GauntletGate[];
   ml?: MLReport | null;
+  day_trader?: DayTraderReport | null;
+  time_machine?: TimeMachineReport | null;
   proposed_order: {
     symbol: string;
     side: OrderSide;

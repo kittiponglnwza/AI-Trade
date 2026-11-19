@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   Brain,
   CheckCircle2,
+  Clock,
   ExternalLink,
   FlaskConical,
   Newspaper,
   Play,
+  Radar,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -17,6 +19,7 @@ import {
   fetchBacktest,
   fetchMlStatus,
   fetchNews,
+  fetchWatchlistScanner,
   trainMlModel,
 } from "../services/api";
 import type {
@@ -25,6 +28,7 @@ import type {
   MLModelStatus,
   NewsResponse,
   Timeframe,
+  WatchlistScannerItem,
 } from "../types/trading";
 
 interface GauntletPanelProps {
@@ -49,6 +53,8 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
   const [runningGauntlet, setRunningGauntlet] = useState(false);
   const [trainingMl, setTrainingMl] = useState(false);
   const [runningBacktest, setRunningBacktest] = useState(false);
+  const [scanningWatchlist, setScanningWatchlist] = useState(false);
+  const [scannerItems, setScannerItems] = useState<WatchlistScannerItem[] | null>(null);
   const [loadingNews, setLoadingNews] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
@@ -169,7 +175,22 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     }
   };
 
+  const handleScanWatchlistSetups = async () => {
+    setScanningWatchlist(true);
+    setErrMsg(null);
+    try {
+      const res = await fetchWatchlistScanner(timeframe);
+      setScannerItems(res.items);
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "สแกน Watchlist ไม่สำเร็จ");
+    } finally {
+      setScanningWatchlist(false);
+    }
+  };
+
   const ml = gauntlet?.ml;
+  const dayTrader = gauntlet?.day_trader;
+  const timeMachine = gauntlet?.time_machine;
   const oosSummary = ml?.oos_summary ?? mlStatus?.meta?.oos_summary ?? null;
 
   return (
@@ -273,12 +294,22 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
               </button>
               <button
                 type="button"
+                disabled={scanningWatchlist}
+                onClick={handleScanWatchlistSetups}
+                className="flex items-center gap-1.5 rounded border border-[#4ec9b0]/50 bg-[#4ec9b0]/15 px-2.5 py-1.5 text-xs font-semibold text-[#4ec9b0] hover:bg-[#4ec9b0]/25 disabled:opacity-50"
+                title="สแกนหา ORB / Flag / VWAP Reclaim / 20-Bar Breakout บนแท่งเทียนที่ปิดแล้วทุกตัวใน Watchlist (/trader-scanner)"
+              >
+                <Radar className="h-3.5 w-3.5" />
+                {scanningWatchlist ? "Scanning..." : "Scan Setups"}
+              </button>
+              <button
+                type="button"
                 disabled={runningGauntlet}
                 onClick={() => handleRunGauntlet(false)}
                 className="flex items-center gap-1.5 rounded bg-[#007acc] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1f8ad2] disabled:opacity-50"
               >
                 <Play className="h-3.5 w-3.5" />
-                {runningGauntlet ? "Evaluating..." : "Run 9-Gate"}
+                {runningGauntlet ? "Evaluating..." : "Run 9-Gate + TimeMachine"}
               </button>
               <button
                 type="button"
@@ -330,7 +361,7 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                 </div>
               </div>
 
-              <div className="font-mono-num grid grid-cols-3 gap-2 rounded border border-[#2b2b2b] bg-[#252526] p-2 text-[11px]">
+              <div className="font-mono-num grid grid-cols-2 gap-2 rounded border border-[#2b2b2b] bg-[#252526] p-2 text-[11px] sm:grid-cols-4">
                 <div>
                   <span className="text-[#9d9d9d]">ML Conviction: </span>
                   <strong className="text-[#4fc1ff]">
@@ -359,6 +390,24 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                     {ml.mtf_bonus_pct >= 0 ? "+" : ""}
                     {ml.mtf_bonus_pct.toFixed(1)}%
                   </strong>
+                </div>
+                <div>
+                  <span className="text-[#9d9d9d]">Setup + 10k Sim: </span>
+                  <strong
+                    className={
+                      (ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0) >= 0
+                        ? "text-[#4ec9b0]"
+                        : "text-[#f14c4c]"
+                    }
+                  >
+                    {(ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0) >= 0 ? "+" : ""}
+                    {((ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0)).toFixed(1)}%
+                  </strong>
+                  <div className="text-[10px] text-[#6e6e6e]">
+                    Setup {(ml.day_trader_bonus_pct ?? 0) >= 0 ? "+" : ""}
+                    {(ml.day_trader_bonus_pct ?? 0).toFixed(1)}% · TM {(ml.time_machine_bonus_pct ?? 0) >= 0 ? "+" : ""}
+                    {(ml.time_machine_bonus_pct ?? 0).toFixed(1)}%
+                  </div>
                 </div>
               </div>
 
@@ -414,6 +463,232 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {timeMachine && timeMachine.replays > 0 && (
+            <div className="mt-3 rounded border border-[#4ec9b0]/50 bg-[#1e1e1e] p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-[#4ec9b0]" />
+                  <div>
+                    <div className="text-xs font-semibold text-[#e1e1e1]">
+                      Time Machine ({timeMachine.replays.toLocaleString()} Time-of-Day Replays · Seed {timeMachine.seed})
+                    </div>
+                    <div className="text-[11px] text-[#9d9d9d]">{timeMachine.verdict_th}</div>
+                  </div>
+                </div>
+                <span
+                  className={`font-mono-num rounded px-2 py-0.5 text-[10px] font-bold ${
+                    timeMachine.verdict === "STRONGLY_TARGET" || timeMachine.verdict === "LEANS_TARGET"
+                      ? "bg-[#3fb950]/20 text-[#3fb950]"
+                      : timeMachine.verdict === "COIN_FLIP"
+                      ? "bg-[#cca700]/20 text-[#dcdcaa]"
+                      : "bg-[#f14c4c]/20 text-[#f14c4c]"
+                  }`}
+                >
+                  {timeMachine.verdict} · EV {timeMachine.expected_r >= 0 ? "+" : ""}
+                  {timeMachine.expected_r}R
+                </span>
+              </div>
+
+              <div className="space-y-1">
+                <div className="font-mono-num flex justify-between text-[11px]">
+                  <span className="text-[#3fb950]">🎯 ชน TP ก่อน: {timeMachine.target_first_pct}%</span>
+                  <span className="text-[#9d9d9d]">⏱️ ยังไม่ชน ({timeMachine.horizon_bars} แท่ง): {timeMachine.neither_pct}%</span>
+                  <span className="text-[#f14c4c]">🛑 ชน SL ก่อน: {timeMachine.stop_first_pct}%</span>
+                </div>
+                <div className="flex h-2 w-full overflow-hidden rounded bg-[#2b2b2b]">
+                  <div
+                    className="h-full bg-[#3fb950]"
+                    style={{ width: `${timeMachine.target_first_pct}%` }}
+                  />
+                  <div
+                    className="h-full bg-[#6e6e6e]"
+                    style={{ width: `${timeMachine.neither_pct}%` }}
+                  />
+                  <div
+                    className="h-full bg-[#f14c4c]"
+                    style={{ width: `${timeMachine.stop_first_pct}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="font-mono-num grid grid-cols-2 gap-2 rounded border border-[#2b2b2b] bg-[#252526] p-2 text-[11px] sm:grid-cols-4">
+                <div>
+                  <div className="text-[10px] text-[#9d9d9d]">Resolved Win Rate</div>
+                  <div className="font-bold text-[#e1e1e1]">
+                    {timeMachine.resolved_win_rate_pct}%{" "}
+                    <span className="text-[10px] font-normal text-[#9d9d9d]">
+                      (BE {timeMachine.breakeven_win_rate_pct}%)
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#9d9d9d]">Edge vs Breakeven</div>
+                  <div
+                    className={`font-bold ${
+                      timeMachine.edge_vs_breakeven_pp >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                    }`}
+                  >
+                    {timeMachine.edge_vs_breakeven_pp >= 0 ? "+" : ""}
+                    {timeMachine.edge_vs_breakeven_pp} pp
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#9d9d9d]">Green at Close</div>
+                  <div className="font-bold text-[#4ec9b0]">{timeMachine.green_at_close_pct}%</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#9d9d9d]">Price Fan (P5 / P50 / P95)</div>
+                  <div className="text-[10px] font-semibold text-[#cccccc]">
+                    {timeMachine.price_percentiles.p5} / {timeMachine.price_percentiles.p50_median} /{" "}
+                    {timeMachine.price_percentiles.p95}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {dayTrader && (
+            <div className="mt-3 rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Radar className="h-4 w-4 text-[#dcdcaa]" />
+                  <div>
+                    <div className="text-xs font-semibold text-[#e1e1e1]">
+                      Day-Trader Setup Scanner & Closed-Bar Entry Timer ({dayTrader.active_setup_label})
+                    </div>
+                    <div className="text-[11px] text-[#9d9d9d]">{dayTrader.entry_timer_detail}</div>
+                  </div>
+                </div>
+                <span
+                  className={`font-mono-num rounded px-2 py-0.5 text-[10px] font-bold ${
+                    dayTrader.entry_timer_state === "TRIGGERED_ON_CLOSED_BAR"
+                      ? "bg-[#3fb950]/20 text-[#3fb950]"
+                      : dayTrader.entry_timer_state === "FORMING_BAR_POKE_WAIT"
+                      ? "bg-[#cca700]/20 text-[#dcdcaa]"
+                      : "bg-[#313131] text-[#9d9d9d]"
+                  }`}
+                >
+                  {dayTrader.entry_timer_state}
+                </span>
+              </div>
+
+              {dayTrader.opening_range && (
+                <div className="font-mono-num flex flex-wrap gap-3 rounded border border-[#2b2b2b] bg-[#252526] px-2.5 py-1.5 text-[11px] text-[#cccccc]">
+                  <span>
+                    OR High: <strong className="text-[#3fb950]">{dayTrader.opening_range.or_high}</strong>
+                  </span>
+                  <span>
+                    OR Mid (SL): <strong className="text-[#dcdcaa]">{dayTrader.opening_range.or_mid}</strong>
+                  </span>
+                  <span>
+                    OR Low: <strong className="text-[#f14c4c]">{dayTrader.opening_range.or_low}</strong>
+                  </span>
+                  <span>
+                    Session VWAP: <strong className="text-[#4fc1ff]">{dayTrader.opening_range.session_vwap}</strong>
+                  </span>
+                  <span>
+                    Vol Ratio: <strong className="text-[#c586c0]">{dayTrader.opening_range.vol_ratio_x}x</strong>
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 text-[11px]">
+                {dayTrader.setups.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex items-start justify-between gap-2 rounded border border-[#2b2b2b] bg-[#252526] px-2.5 py-1.5"
+                  >
+                    <div>
+                      <div className="font-semibold text-[#e1e1e1]">{s.label}</div>
+                      <div className="text-[10px] text-[#9d9d9d]">{s.detail}</div>
+                    </div>
+                    <span
+                      className={`font-mono-num shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                        s.status === "TRIGGERED"
+                          ? "bg-[#3fb950]/20 text-[#3fb950]"
+                          : s.status === "FORMING_POKE"
+                          ? "bg-[#cca700]/20 text-[#dcdcaa]"
+                          : "bg-[#1e1e1e] text-[#6e6e6e]"
+                      }`}
+                    >
+                      {s.status} {s.side !== "NONE" ? s.side : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {scannerItems && (
+            <div className="mt-3 rounded border border-[#4ec9b0]/40 bg-[#1e1e1e] p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-[#4ec9b0]">
+                  Watchlist Multi-Setup Scanner ({timeframe} · Closed-Bar Confirmation)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setScannerItems(null)}
+                  className="text-[11px] text-[#9d9d9d] hover:text-white"
+                >
+                  ซ่อนตาราง
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="font-mono-num w-full text-left text-[11px]">
+                  <thead>
+                    <tr className="border-b border-[#2b2b2b] text-[#9d9d9d]">
+                      <th className="py-1 pr-2">Symbol</th>
+                      <th className="py-1 pr-2">Bid</th>
+                      <th className="py-1 pr-2">Active Setup</th>
+                      <th className="py-1 pr-2">Timer Status</th>
+                      <th className="py-1 pr-2">OR Mid / VWAP</th>
+                      <th className="py-1 text-right">Vol</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#2b2b2b]">
+                    {scannerItems.map((it) => (
+                      <tr key={it.symbol} className="hover:bg-[#2a2d2e]">
+                        <td className="py-1.5 pr-2 font-bold text-[#e1e1e1]">{it.symbol}</td>
+                        <td className="py-1.5 pr-2 text-[#cccccc]">{it.bid}</td>
+                        <td className="py-1.5 pr-2 text-[#e1e1e1]">
+                          {it.active_setup_label}{" "}
+                          {it.active_setup_side !== "NONE" && (
+                            <span
+                              className={`ml-1 rounded px-1 py-0.5 text-[9px] font-bold ${
+                                it.active_setup_side === "BUY"
+                                  ? "bg-[#3fb950]/20 text-[#3fb950]"
+                                  : "bg-[#f14c4c]/20 text-[#f14c4c]"
+                              }`}
+                            >
+                              {it.active_setup_side}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                              it.entry_timer_state === "TRIGGERED_ON_CLOSED_BAR"
+                                ? "bg-[#3fb950]/20 text-[#3fb950]"
+                                : it.entry_timer_state === "FORMING_BAR_POKE_WAIT"
+                                ? "bg-[#cca700]/20 text-[#dcdcaa]"
+                                : "text-[#6e6e6e]"
+                            }`}
+                          >
+                            {it.entry_timer_state}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-2 text-[#9d9d9d]">
+                          {it.or_mid} / {it.session_vwap}
+                        </td>
+                        <td className="py-1.5 text-right text-[#c586c0]">{it.vol_ratio_x}x</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

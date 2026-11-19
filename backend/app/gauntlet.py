@@ -7,6 +7,7 @@ from typing import Any
 
 import MetaTrader5 as mt5
 
+from app.day_trader_skill import detect_day_trader_setups, run_time_machine_simulation
 from app.indicators import classify_trend
 from app.ml_engine import predict_with_news
 from app.mt5_service import mt5_service
@@ -113,36 +114,53 @@ def evaluate_gauntlet(
         }
     )
 
-    # G4: Momentum & Overextension Timing
+    # G4: Momentum & Day-Trader Closed-Bar Entry Timer (/trader-scanner + /trader-entry)
+    day_trader = detect_day_trader_setups(candles, direction_hint=direction, tf=tf_u, digits=digits)
+    eval_dir = (
+        direction
+        if direction in ("BUY", "SELL")
+        else (
+            day_trader["active_setup_side"]
+            if day_trader.get("active_setup_side") in ("BUY", "SELL")
+            else ("BUY" if len(bull_tfs) >= len(bear_tfs) else "SELL")
+        )
+    )
     entry_rsi = float(last_bar["rsi14"]) if last_bar and last_bar.get("rsi14") is not None else 50.0
     entry_macd = float(tf_map.get(tf_u, {}).get("macd_hist") or 0.0)
+    dt_label = day_trader.get("active_setup_label", "None")
+    dt_timer = day_trader.get("entry_timer_state", "WAITING")
+
     if direction == "BUY":
         if entry_rsi > 76:
             g4_status, g4_detail = "FAIL", f"{tf_u} RSI {entry_rsi:.1f} is heavily overbought (>76) — avoid chasing top."
+        elif dt_timer == "FORMING_BAR_POKE_WAIT":
+            g4_status, g4_detail = "WARN", f"{day_trader.get('entry_timer_detail')} (RSI {entry_rsi:.1f})."
         elif entry_rsi > 68:
-            g4_status, g4_detail = "WARN", f"{tf_u} RSI {entry_rsi:.1f} is stretched (>68) — pullback preferred."
+            g4_status, g4_detail = "WARN", f"{tf_u} RSI {entry_rsi:.1f} is stretched (>68) · Setup: {dt_label}."
         else:
-            g4_status, g4_detail = "PASS", f"{tf_u} RSI {entry_rsi:.1f} has upside room (MACD hist {entry_macd:+.3f})."
+            g4_status, g4_detail = "PASS", f"{tf_u} RSI {entry_rsi:.1f} · Setup: {dt_label} ({dt_timer})."
     elif direction == "SELL":
         if entry_rsi < 24:
             g4_status, g4_detail = "FAIL", f"{tf_u} RSI {entry_rsi:.1f} is heavily oversold (<24) — avoid chasing bottom."
+        elif dt_timer == "FORMING_BAR_POKE_WAIT":
+            g4_status, g4_detail = "WARN", f"{day_trader.get('entry_timer_detail')} (RSI {entry_rsi:.1f})."
         elif entry_rsi < 32:
-            g4_status, g4_detail = "WARN", f"{tf_u} RSI {entry_rsi:.1f} is stretched (<32) — bounce entry preferred."
+            g4_status, g4_detail = "WARN", f"{tf_u} RSI {entry_rsi:.1f} is stretched (<32) · Setup: {dt_label}."
         else:
-            g4_status, g4_detail = "PASS", f"{tf_u} RSI {entry_rsi:.1f} has downside room (MACD hist {entry_macd:+.3f})."
+            g4_status, g4_detail = "PASS", f"{tf_u} RSI {entry_rsi:.1f} · Setup: {dt_label} ({dt_timer})."
     else:
-        g4_status, g4_detail = "WARN", f"No directional bias yet ({tf_u} RSI {entry_rsi:.1f})."
+        g4_status, g4_detail = "WARN", f"MTF mixed ({tf_u} RSI {entry_rsi:.1f}) · Intraday Scanner: {dt_label}."
     gates.append(
         {
             "id": "G4_MOMENTUM_TIMING",
-            "label": "RSI / Momentum",
+            "label": "Entry Timer & Setup",
             "status": g4_status,
-            "metric": f"RSI {entry_rsi:.1f} · MACD {entry_macd:+.2f}",
+            "metric": f"{day_trader.get('active_setup', 'WAIT')} · RSI {entry_rsi:.1f}",
             "detail": g4_detail,
         }
     )
 
-    # G5 & G6: Structural Stop Loss & Risk-Reward Target
+    # G5 & G6: Setup-Aware Exit Planner (/trader-exit: OR-Midpoint / Flag / Structural SL & R:R Target)
     recent_12 = candles[-12:] if len(candles) >= 12 else candles
     swing_hi = max(float(c["high"]) for c in recent_12) if recent_12 else quote["ask"]
     swing_lo = min(float(c["low"]) for c in recent_12) if recent_12 else quote["bid"]
@@ -150,11 +168,17 @@ def evaluate_gauntlet(
 
     sl_price: float | None = None
     tp_price: float | None = None
-    entry_ref = float(quote["ask"] if direction == "BUY" else quote["bid"])
+    entry_ref = float(quote["ask"] if eval_dir == "BUY" else quote["bid"])
     rr_val = 0.0
+    stop_rule_used = f"{sl_atr_mult:.1f}xATR"
+    rec_sl = day_trader.get("recommended_stop_price")
+    rec_rule = day_trader.get("recommended_stop_rule", "atr")
 
-    if direction == "BUY":
+    if eval_dir == "BUY":
         raw_sl = min(swing_lo - 0.3 * atr, entry_ref - sl_atr_mult * atr)
+        if rec_sl is not None and (entry_ref - 2.6 * atr) <= float(rec_sl) <= (entry_ref - max(0.5 * atr, min_stop * 1.3)):
+            raw_sl = float(rec_sl)
+            stop_rule_used = str(rec_rule).upper()
         max_sl = entry_ref - max(sl_atr_mult * 1.7, 2.5) * atr
         min_allowed_sl = entry_ref - max(min(sl_atr_mult * 0.8, 1.1) * atr, min_stop * 1.2)
         sl_price = round(max(max_sl, min(raw_sl, min_allowed_sl)), digits)
@@ -162,8 +186,11 @@ def evaluate_gauntlet(
         tp_dist = max(tp_atr_mult * atr, max(min_rr_ratio, 1.1) * sl_dist)
         tp_price = round(entry_ref + tp_dist, digits)
         rr_val = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
-    elif direction == "SELL":
+    elif eval_dir == "SELL":
         raw_sl = max(swing_hi + 0.3 * atr, entry_ref + sl_atr_mult * atr)
+        if rec_sl is not None and (entry_ref + max(0.5 * atr, min_stop * 1.3)) <= float(rec_sl) <= (entry_ref + 2.6 * atr):
+            raw_sl = float(rec_sl)
+            stop_rule_used = str(rec_rule).upper()
         max_sl = entry_ref + max(sl_atr_mult * 1.7, 2.5) * atr
         min_allowed_sl = entry_ref + max(min(sl_atr_mult * 0.8, 1.1) * atr, min_stop * 1.2)
         sl_price = round(min(max_sl, max(raw_sl, min_allowed_sl)), digits)
@@ -172,28 +199,61 @@ def evaluate_gauntlet(
         tp_price = round(entry_ref - tp_dist, digits)
         rr_val = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
 
-    if sl_price is not None and abs(entry_ref - sl_price) > min_stop:
+    # Run 10,000-Session Time Machine (/trader-timemachine) on the planned Entry/SL/TP
+    time_machine = (
+        run_time_machine_simulation(
+            candles,
+            eval_dir,
+            entry_ref,
+            sl_price,
+            tp_price,
+            tf=tf_u,
+            horizon_bars=24,
+            replays=10000,
+            digits=digits,
+        )
+        if sl_price is not None and tp_price is not None
+        else None
+    )
+
+    if direction in ("BUY", "SELL") and sl_price is not None and abs(entry_ref - sl_price) > min_stop:
         g5_status = "PASS"
-        g5_detail = f"Structural SL at {sl_price:.{digits}f} ({sl_atr_mult:.1f}xATR, dist ${abs(entry_ref - sl_price):.{digits}f})."
+        g5_detail = f"Exit Planner SL at {sl_price:.{digits}f} (Rule: {stop_rule_used}, dist ${abs(entry_ref - sl_price):.{digits}f})."
     else:
         g5_status = "FAIL"
-        g5_detail = "No valid structural SL level available without directional bias."
+        g5_detail = (
+            f"Candidate {eval_dir} SL {sl_price:.{digits}f} ({stop_rule_used}) — waiting for MTF alignment."
+            if sl_price is not None
+            else "No valid structural SL level available."
+        )
     gates.append(
         {
             "id": "G5_STRUCTURE_SL",
-            "label": "Structural Stop Loss",
+            "label": "Exit Planner (SL)",
             "status": g5_status,
-            "metric": f"SL {sl_price:.{digits}f}" if sl_price else "N/A",
+            "metric": f"SL {sl_price:.{digits}f} ({stop_rule_used})" if sl_price else "N/A",
             "detail": g5_detail,
         }
     )
 
     if direction in ("BUY", "SELL") and rr_val >= min_rr_ratio:
-        g6_status = "PASS"
-        g6_detail = f"TP {tp_price:.{digits}f} ({tp_atr_mult:.1f}xATR) yields Risk:Reward 1:{rr_val:.2f} (>= 1:{min_rr_ratio:.2f})."
+        if time_machine and time_machine.get("verdict") == "LEANS_STOP":
+            g6_status = "FAIL"
+            g6_detail = (
+                f"TP {tp_price:.{digits}f} (1:{rr_val:.2f}) rejected by 10,000-replay Time Machine: "
+                f"TP First {time_machine['target_first_pct']}% vs SL First {time_machine['stop_first_pct']}% (EV {time_machine['expected_r']:+.2f}R)."
+            )
+        else:
+            tm_tag = (
+                f" · Time Machine 10k: TP {time_machine['target_first_pct']}%/SL {time_machine['stop_first_pct']}% (EV {time_machine['expected_r']:+.2f}R)"
+                if time_machine
+                else ""
+            )
+            g6_status = "PASS"
+            g6_detail = f"TP {tp_price:.{digits}f} yields R:R 1:{rr_val:.2f} (>= 1:{min_rr_ratio:.2f}){tm_tag}."
     else:
         g6_status = "FAIL"
-        g6_detail = f"Risk:Reward below 1:{min_rr_ratio:.2f} threshold or no setup."
+        g6_detail = f"Risk:Reward below 1:{min_rr_ratio:.2f} threshold or waiting for directional setup."
     gates.append(
         {
             "id": "G6_RISK_REWARD",
@@ -267,7 +327,7 @@ def evaluate_gauntlet(
         }
     )
 
-    # G9: LightGBM + Live News Fusion Confidence Gate (>= min_confidence_pct, default 75%)
+    # G9: LightGBM + Live News + Day-Trader Setup & Time Machine Confidence Gate (>= min_confidence_pct)
     ml_report: dict[str, Any] | None = None
     try:
         ml_report = predict_with_news(
@@ -279,7 +339,18 @@ def evaluate_gauntlet(
             min_confidence_pct=min_confidence_pct,
             auto_train=True,
         )
-        conf = float(ml_report["final_confidence_pct"])
+        dt_bonus = float(day_trader.get("setup_score_bonus_pct") or 0.0)
+        tm_bonus = float(time_machine.get("tm_confidence_bonus_pct") or 0.0) if time_machine else 0.0
+        combined_conf = round(
+            min(99.0, max(1.0, float(ml_report["final_confidence_pct"]) + dt_bonus + tm_bonus)),
+            2,
+        )
+        ml_report["day_trader_bonus_pct"] = round(dt_bonus, 2)
+        ml_report["time_machine_bonus_pct"] = round(tm_bonus, 2)
+        ml_report["final_confidence_pct"] = combined_conf
+        ml_report["meets_threshold"] = bool(direction in ("BUY", "SELL") and combined_conf >= min_confidence_pct)
+
+        conf = combined_conf
         if ml_report["meets_threshold"]:
             g9_status = "PASS"
         else:
@@ -287,8 +358,8 @@ def evaluate_gauntlet(
         g9_metric = f"{conf:.1f}% / {min_confidence_pct:.0f}%"
         g9_detail = (
             f"Combined {conf:.1f}% vs >= {min_confidence_pct:.0f}% gate "
-            f"(ML Conviction {ml_report['ml_conviction_pct']:.1f}% [Raw P(Win) {ml_report['ml_raw_prob_pct']:.1f}%] "
-            f"+ News {ml_report['news_adjustment_pct']:+.1f}% + MTF {ml_report['mtf_bonus_pct']:+.1f}%)."
+            f"(ML {ml_report['ml_conviction_pct']:.1f}% + News {ml_report['news_adjustment_pct']:+.1f}% "
+            f"+ MTF {ml_report['mtf_bonus_pct']:+.1f}% + Setup {dt_bonus:+.1f}% + TimeMachine {tm_bonus:+.1f}%)."
         )
     except Exception as exc:
         g9_status = "FAIL"
@@ -360,6 +431,8 @@ def evaluate_gauntlet(
         "mtf_snapshot": mtf,
         "gates": gates,
         "ml": ml_report,
+        "day_trader": day_trader,
+        "time_machine": time_machine,
         "proposed_order": proposed_order,
         "news_summary": {
             "sentiment": news["sentiment"],

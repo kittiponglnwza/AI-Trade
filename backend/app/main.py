@@ -43,6 +43,7 @@ from app.database import (
     update_trade_log_notes,
     upsert_mt5_deals,
 )
+from app.day_trader_skill import scan_watchlist_setups
 from app.discord_notify import (
     notify_discord_execution_result,
     notify_discord_proposal,
@@ -772,6 +773,18 @@ async def post_gauntlet_evaluate(
         asyncio.create_task(asyncio.to_thread(notify_discord_proposal, queued_proposal))
 
     return {**result, "queued_proposal": queued_proposal}
+
+
+@app.get("/api/scanner/watchlist")
+async def get_scanner_watchlist_endpoint(
+    tf: str = Query(default="M15"),
+) -> dict[str, Any]:
+    try:
+        symbols = get_watchlist()
+        items = await asyncio.to_thread(scan_watchlist_setups, symbols, tf)
+        return {"tf": tf.upper(), "count": len(items), "items": items}
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
 
 
 @app.get("/api/ml/status")

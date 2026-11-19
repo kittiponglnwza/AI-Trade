@@ -21,6 +21,7 @@ import type {
   WatchdogConfig,
   WatchdogStatus,
   WatchlistQuote,
+  WatchlistScannerItem,
 } from "../types/trading";
 
 const STORAGE_URL_KEY = "mt5_bridge_url";
@@ -333,6 +334,12 @@ export function evaluateGauntlet(
 export function fetchMlStatus(symbol: string, tf: Timeframe) {
   return requestJson<MLModelStatus>(
     `/api/ml/status?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`
+  );
+}
+
+export function fetchWatchlistScanner(tf: Timeframe) {
+  return requestJson<{ tf: string; count: number; items: WatchlistScannerItem[] }>(
+    `/api/scanner/watchlist?tf=${encodeURIComponent(tf)}`
   );
 }
 

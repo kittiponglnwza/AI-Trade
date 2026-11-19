@@ -115,28 +115,38 @@ def main() -> int:
         f"XAUUSD={len(gold_news['articles'])} ({gold_news['sentiment']}), NVDA={len(nvda_news['articles'])} ({nvda_news['sentiment']})",
     )
 
-    # Gate 5: 9-Gate ML + News Trading Gauntlet Evaluation (No auto_queue)
+    # Gate 5: 9-Gate ML + News + Day-Trader Skill + 10,000-Replay Time Machine Gauntlet Evaluation
     gauntlet = http_json(
         "POST",
         f"{BASE}/api/gauntlet/evaluate",
         {
             "symbol": "XAUUSD",
             "tf": "M15",
-            "risk_pct": 15.0,
+            "risk_pct": 2.0,
             "min_confidence_pct": 75.0,
             "auto_queue": False,
         },
     )
+    scanner_res = http_json("GET", f"{BASE}/api/scanner/watchlist?tf=M15")
+    dt_rep = gauntlet.get("day_trader") or {}
+    tm_rep = gauntlet.get("time_machine") or {}
     g5_ok = (
         gauntlet["total_gates"] == 9
         and len(gauntlet["gates"]) == 9
         and gauntlet["verdict"] in ("PASS", "WAIT", "REJECT")
         and len(gauntlet["mtf_snapshot"]) == 5
+        and len(dt_rep.get("setups", [])) == 5
+        and tm_rep.get("replays") == 10000
+        and scanner_res.get("count", 0) >= 1
     )
     record(
         "G5_9GATE_GAUNTLET",
         g5_ok,
-        f"verdict={gauntlet['verdict']} {gauntlet['direction']} ({gauntlet['passed_count']}/9 PASS)",
+        (
+            f"verdict={gauntlet['verdict']} {gauntlet['direction']} ({gauntlet['passed_count']}/9 PASS), "
+            f"setup={dt_rep.get('active_setup')} ({dt_rep.get('entry_timer_state')}), "
+            f"tm10k={tm_rep.get('verdict')} (TP:{tm_rep.get('target_first_pct')}%/SL:{tm_rep.get('stop_first_pct')}%, EV:{tm_rep.get('expected_r')}R)"
+        ),
     )
 
     # Gate 6: Real MT5 Historical Backtest (600 bars)
