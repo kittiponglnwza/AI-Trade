@@ -222,6 +222,24 @@ async def post_confirm_proposal(
     comment = req.comment or f"{proposal['source']}-P{proposal_id}"
 
     try:
+        acc = await asyncio.to_thread(mt5_service.get_account_summary)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+    if not acc["terminal_trade_allowed"]:
+        msg = (
+            "ปุ่ม Algo Trading บน MT5 ยังปิดอยู่ (OFF) — "
+            "กดปุ่ม Algo Trading ด้านบน MT5 (หรือ Ctrl+E) ให้เป็นสีเขียวก่อน แล้วกด Confirm ใหม่อีกครั้ง"
+        )
+        log_audit(
+            event_type="PROPOSAL_BLOCKED_ALGO_OFF",
+            actor="USER",
+            summary=f"Proposal #{proposal_id} paused: Terminal Algo Trading is OFF",
+            payload={"proposal_id": proposal_id},
+        )
+        raise HTTPException(status_code=400, detail=msg)
+
+    try:
         exec_res = await asyncio.to_thread(
             mt5_service.send_order,
             proposal["symbol"],
@@ -235,6 +253,14 @@ async def post_confirm_proposal(
             comment,
             req.allow_real,
         )
+    except (PermissionError, ValueError) as exc:
+        log_audit(
+            event_type="PROPOSAL_CONFIRM_BLOCKED",
+            actor="USER",
+            summary=f"Proposal #{proposal_id} blocked: {exc}",
+            payload={"proposal_id": proposal_id},
+        )
+        raise _map_mt5_error(exc) from exc
     except Exception as exc:
         update_proposal_status(proposal_id, "FAILED", exec_comment=str(exc))
         log_audit(

@@ -185,22 +185,33 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
             {recent.map((p) => (
               <div
                 key={p.id}
-                className="font-mono-num flex items-center justify-between rounded border border-[#2b2b2b] bg-[#1e1e1e] px-2.5 py-1.5 text-[11px] text-[#9d9d9d]"
+                className="rounded border border-[#2b2b2b] bg-[#1e1e1e] px-2.5 py-1.5 text-[11px] text-[#9d9d9d]"
               >
-                <span>
-                  #{p.id} {p.side} {p.lots} {p.symbol}
-                </span>
-                <span
-                  className={
-                    p.status === "EXECUTED"
-                      ? "font-semibold text-[#3fb950]"
-                      : p.status === "REJECTED"
-                      ? "text-[#6e6e6e]"
-                      : "text-[#f14c4c]"
-                  }
-                >
-                  {p.status}
-                </span>
+                <div className="font-mono-num flex items-center justify-between">
+                  <span>
+                    #{p.id} {p.side} {p.lots} {p.symbol}
+                  </span>
+                  <span
+                    className={
+                      p.status === "EXECUTED"
+                        ? "font-semibold text-[#3fb950]"
+                        : p.status === "REJECTED"
+                        ? "text-[#6e6e6e]"
+                        : "font-semibold text-[#f14c4c]"
+                    }
+                  >
+                    {p.status}
+                  </span>
+                </div>
+                {p.exec_comment && (
+                  <p
+                    className={`mt-1 text-[10px] break-words ${
+                      p.status === "FAILED" ? "text-[#f48771]" : "text-[#6e6e6e]"
+                    }`}
+                  >
+                    {p.exec_comment}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -248,8 +259,10 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
             </div>
 
             {account && !account.terminal_trade_allowed && (
-              <div className="mt-3 rounded border border-[#cca700]/50 bg-[#cca700]/10 p-2.5 text-xs text-[#dcdcaa]">
-                คำเตือน: MT5 <strong>Algo Trading</strong> ยังเป็น OFF กรุณากดเปิดเป็นสีเขียวบน MT5 ก่อน
+              <div className="mt-3 rounded border border-[#cca700]/50 bg-[#cca700]/10 p-2.5 text-xs text-[#dcdcaa] break-words">
+                คำเตือน: กดปุ่ม <strong>&ldquo;Algo Trading&rdquo;</strong> บนแถบเครื่องมือ MT5 ด้านบน (หรือกด{" "}
+                <strong>Ctrl+E</strong>) ให้เป็นสีเขียว หรือ{" "}
+                <strong>Tools → Options → Expert Advisors → ติ๊ก Allow algorithmic trading</strong> ก่อนกด Execute
               </div>
             )}
 
