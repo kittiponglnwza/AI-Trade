@@ -24,6 +24,7 @@ _MODEL_LOCK = threading.RLock()
 _MODEL_CACHE: dict[str, dict[str, Any]] = {}
 
 MIN_POSITIVE_EV_PROB = 0.45
+BREAKEVEN_PROB = 1.5 / 3.5  # ~0.4286 for TP=2.0xATR / SL=1.5xATR
 
 FEATURE_NAMES: list[str] = [
     "dist_ema20_atr",
@@ -189,11 +190,16 @@ def _predict_calibrated(
 
 
 def _prob_to_conviction(prob: float, cal_sorted: np.ndarray | None) -> float:
-    """Convert calibrated win probability into quantile conviction score only when positive-EV."""
-    if prob < MIN_POSITIVE_EV_PROB or cal_sorted is None or len(cal_sorted) == 0:
-        return round(min(99.0, max(0.0, prob * 100.0)), 2)
+    """Smoothly convert calibrated win probability into quantile conviction score without cliff jumps."""
+    raw_pct = prob * 100.0
+    if prob <= BREAKEVEN_PROB or cal_sorted is None or len(cal_sorted) == 0:
+        return round(min(99.0, max(0.0, raw_pct)), 2)
     quantile_pct = float(np.searchsorted(cal_sorted, prob, side="right") / len(cal_sorted) * 100.0)
-    return round(min(99.0, max(prob * 100.0, quantile_pct)), 2)
+    target_pct = max(raw_pct, quantile_pct)
+    # Smooth linear ramp over [BREAKEVEN_PROB, BREAKEVEN_PROB + 0.05] (~42.9% to 47.9%)
+    alpha = min(1.0, max(0.0, (prob - BREAKEVEN_PROB) / 0.05))
+    blended = (1.0 - alpha) * raw_pct + alpha * target_pct
+    return round(min(99.0, max(0.0, blended)), 2)
 
 
 def _fit_side_model(

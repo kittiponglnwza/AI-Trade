@@ -232,7 +232,7 @@ async def post_create_proposal(body: ProposalCreateRequest) -> dict[str, Any]:
             "entry_price": checked["entry_price"],
             "sl": checked["sl"],
             "tp": checked["tp"],
-            "risk_pct": checked["est_risk_pct"] if body.risk_pct is None else body.risk_pct,
+            "risk_pct": checked["est_risk_pct"],
             "lots": checked["lots"],
             "est_risk_usd": checked["est_risk_usd"],
             "est_reward_usd": checked["est_reward_usd"],

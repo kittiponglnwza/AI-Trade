@@ -461,11 +461,26 @@ class MT5BridgeService:
             target_risk = capital * (risk_pct / 100.0)
             raw_lots = target_risk / loss_per_lot
 
-            margin_1lot = mt5.order_calc_margin(order_type, symbol, 1.0, float(entry_price))
+            calc_margin_1lot = mt5.order_calc_margin(order_type, symbol, 1.0, float(entry_price))
+            chk_1lot = mt5.order_check(
+                {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": 1.0,
+                    "type": order_type,
+                    "price": float(entry_price),
+                    "deviation": 30,
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": self.detect_filling_mode(sym),
+                }
+            )
+            chk_margin_1lot = float(chk_1lot.margin) if chk_1lot is not None and chk_1lot.margin > 0 else 0.0
+            margin_1lot = max(float(calc_margin_1lot or 0.0), chk_margin_1lot)
+
             margin_free = float(acc.margin_free)
             margin_capped = False
-            if margin_1lot is not None and margin_1lot > 0 and margin_free > 0:
-                max_lots = (margin_free * 0.85) / float(margin_1lot)
+            if margin_1lot > 0 and margin_free > 0:
+                max_lots = (margin_free * 0.85) / margin_1lot
                 if raw_lots > max_lots:
                     raw_lots = max_lots
                     margin_capped = True
@@ -474,7 +489,7 @@ class MT5BridgeService:
             actual_profit = mt5.order_calc_profit(order_type, symbol, lots, float(entry_price), float(sl_price))
             actual_risk = abs(float(actual_profit)) if actual_profit is not None else lots * loss_per_lot
             actual_risk_pct = (actual_risk / capital * 100.0) if capital > 0 else 0.0
-            req_margin = mt5.order_calc_margin(order_type, symbol, lots, float(entry_price))
+            req_margin = lots * margin_1lot if margin_1lot > 0 else mt5.order_calc_margin(order_type, symbol, lots, float(entry_price))
 
             return {
                 "lots": lots,

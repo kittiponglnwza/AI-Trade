@@ -98,23 +98,31 @@ def evaluate_position_plan(
             "partial_reason": None,
         }
 
-    # 1. Auto Breakeven check (+1.0R default)
+    # 1. Auto Breakeven check (+1.0R default, OR >=60% of TP distance if TP < 1.0R)
     be_trigger_r = float(cfg.get("be_trigger_r", 1.0))
     be_offset_pts = int(cfg.get("be_offset_points", 5))
-    if cfg.get("auto_breakeven", True) and current_r >= be_trigger_r:
+    tp_dist = abs(cur_tp - entry) if cur_tp > 0 else 0.0
+    tp_progress = (profit_dist / tp_dist) if tp_dist > 0 and profit_dist > 0 else 0.0
+    be_triggered = (current_r >= be_trigger_r) or (tp_dist > 0 and tp_dist < risk_distance * be_trigger_r and tp_progress >= 0.60)
+    if cfg.get("auto_breakeven", True) and be_triggered:
         target_be = round(
             entry + (be_offset_pts * point if is_buy else -be_offset_pts * point),
             digits,
         )
+        trigger_note = (
+            f"+{current_r:.2f}R ≥ {be_trigger_r:.1f}R"
+            if current_r >= be_trigger_r
+            else f"{tp_progress * 100:.0f}% ของ TP (+{current_r:.2f}R)"
+        )
         if is_buy:
             if cur_sl < target_be - point * 0.5 and (current_price - target_be) > stops_level:
                 new_sl = target_be
-                sl_reason = f"Auto-Breakeven (+{current_r:.2f}R ≥ {be_trigger_r:.1f}R): เลื่อน SL บังทุน -> {target_be}"
+                sl_reason = f"Auto-Breakeven ({trigger_note}): เลื่อน SL บังทุน -> {target_be}"
                 be_applied = True
         else:
             if (cur_sl <= 0 or cur_sl > target_be + point * 0.5) and (target_be - current_price) > stops_level:
                 new_sl = target_be
-                sl_reason = f"Auto-Breakeven (+{current_r:.2f}R ≥ {be_trigger_r:.1f}R): เลื่อน SL บังทุน -> {target_be}"
+                sl_reason = f"Auto-Breakeven ({trigger_note}): เลื่อน SL บังทุน -> {target_be}"
                 be_applied = True
 
     # 2. Auto Trailing SL check (+1.5R start, 0.8R trail distance default)

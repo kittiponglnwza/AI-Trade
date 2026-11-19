@@ -39,7 +39,7 @@ def evaluate_gauntlet(
     if atr <= 0:
         atr = max(quote["point"] * 50, round(quote["bid"] * 0.005, digits))
 
-    # G1: Data freshness & bar completeness
+    # G1: Data freshness & market session open check
     ref_tick = mt5.symbol_info_tick("XAUUSD")
     ref_epoch = int(ref_tick.time) if ref_tick and ref_tick.time > 0 else quote["tick_epoch"]
     tick_age = abs(ref_epoch - quote["tick_epoch"]) if ref_epoch and quote["tick_epoch"] else 0
@@ -47,8 +47,8 @@ def evaluate_gauntlet(
         g1_status = "FAIL"
         g1_detail = f"Invalid quote or insufficient bars ({len(candles)} bars)."
     elif tick_age >= 900:
-        g1_status = "WARN"
-        g1_detail = f"Loaded {len(candles)} {tf_u} bars, but last tick is {tick_age // 60}m old (session may be closed)."
+        g1_status = "FAIL"
+        g1_detail = f"Market session CLOSED (last tick is {tick_age // 60}m old) — blocked to prevent 10018 Market closed."
     else:
         g1_status = "PASS"
         g1_detail = f"Live quote {quote['bid']:.{digits}f}/{quote['ask']:.{digits}f} with {len(candles)} {tf_u} bars."
@@ -331,7 +331,7 @@ def evaluate_gauntlet(
             "entry_price": broker_check["entry_price"],
             "sl": broker_check["sl"],
             "tp": broker_check["tp"],
-            "risk_pct": risk_pct,
+            "risk_pct": broker_check["est_risk_pct"],
             "lots": broker_check["lots"],
             "est_risk_usd": broker_check["est_risk_usd"],
             "est_risk_pct": broker_check["est_risk_pct"],
