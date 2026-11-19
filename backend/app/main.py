@@ -47,6 +47,7 @@ from app.day_trader_skill import scan_watchlist_setups
 from app.discord_notify import (
     notify_discord_execution_result,
     notify_discord_proposal,
+    notify_discord_trade_closed,
     render_discord_action_html,
     test_discord_connection,
     verify_discord_action_token,
@@ -573,6 +574,16 @@ async def post_close_position(
         newly_closed = sync_summary.get("newly_closed_rows") or []
         if newly_closed:
             asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
+            try:
+                acc = await asyncio.to_thread(mt5_service.get_account_summary)
+                all_closed = list_trade_logs(status="CLOSED", limit=5000)
+                st = compute_trading_stats(all_closed, current_balance=acc["balance"])
+                for cr in newly_closed:
+                    asyncio.create_task(
+                        asyncio.to_thread(notify_discord_trade_closed, cr, acc["balance"], st)
+                    )
+            except Exception:
+                pass
         return {"close": res, "sync": sync_summary}
     except Exception as exc:
         raise _map_mt5_error(exc) from exc

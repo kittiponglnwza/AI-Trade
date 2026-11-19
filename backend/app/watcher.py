@@ -22,7 +22,11 @@ from app.database import (
     update_proposal_status,
     upsert_mt5_deals,
 )
-from app.discord_notify import notify_discord_autopilot, notify_discord_proposal
+from app.discord_notify import (
+    notify_discord_autopilot,
+    notify_discord_proposal,
+    notify_discord_trade_closed,
+)
 from app.gauntlet import evaluate_gauntlet
 from app.mt5_service import mt5_service
 from app.sheets_sync import (
@@ -124,6 +128,13 @@ class MarketWatchdog:
                         )
                         await asyncio.to_thread(sync_trade_rows, newly_closed)
                         await asyncio.to_thread(sync_stats_snapshot, stats)
+                        for closed_row in newly_closed:
+                            await asyncio.to_thread(
+                                notify_discord_trade_closed,
+                                closed_row,
+                                acc["balance"],
+                                stats,
+                            )
                 except Exception as exc:
                     add_system_log("WARN", "SYNC", f"Auto-sync deals warning: {exc}")
 

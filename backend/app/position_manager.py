@@ -7,19 +7,21 @@ from datetime import datetime, timezone
 import math
 from typing import Any
 
+from app.analytics import compute_trading_stats
 from app.database import (
     add_system_log,
     get_position_manager_config,
     get_position_state,
     list_position_states,
+    list_trade_logs,
     log_audit,
     prune_position_states,
     upsert_mt5_deals,
     upsert_position_state,
 )
-from app.discord_notify import notify_discord_position_action
+from app.discord_notify import notify_discord_position_action, notify_discord_trade_closed
 from app.mt5_service import mt5_service
-from app.sheets_sync import sync_watchdog_log_row
+from app.sheets_sync import sync_stats_snapshot, sync_trade_rows, sync_watchdog_log_row
 
 
 def compute_initial_risk_distance(
@@ -270,9 +272,35 @@ class SmartPositionManager:
             if not connected:
                 return {"checked": 0, "actions": [], "mt5_connected": False}
 
+            prev_tickets = set(list_position_states().keys())
             positions = await asyncio.to_thread(mt5_service.get_open_positions)
             active_tickets = {int(p["ticket"]) for p in positions}
+            just_closed_tickets = prev_tickets - active_tickets
             prune_position_states(active_tickets)
+
+            if just_closed_tickets:
+                try:
+                    deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, 7)
+                    sync_res = upsert_mt5_deals(deals)
+                    newly_closed = sync_res.get("newly_closed_rows") or []
+                    if newly_closed:
+                        acc = await asyncio.to_thread(mt5_service.get_account_summary)
+                        all_closed = list_trade_logs(status="CLOSED", limit=5000)
+                        st = compute_trading_stats(all_closed, current_balance=acc["balance"])
+                        await asyncio.to_thread(sync_trade_rows, newly_closed)
+                        await asyncio.to_thread(sync_stats_snapshot, st)
+                        for cr in newly_closed:
+                            net_p = float(cr.get("net_profit") or 0.0)
+                            sign = "+" if net_p >= 0 else ""
+                            add_system_log(
+                                "SIGNAL" if net_p >= 0 else "WARN",
+                                "TRADE",
+                                f"จบไม้ #{cr.get('mt5_position_id')} ({cr.get('side')} {cr.get('volume')} {cr.get('symbol')}): Net P/L {sign}${net_p:.2f}",
+                                symbol=str(cr.get("symbol") or ""),
+                            )
+                            await asyncio.to_thread(notify_discord_trade_closed, cr, acc["balance"], st)
+                except Exception as exc:
+                    add_system_log("WARN", "POS_MGR", f"Close detection sync warning: {exc}")
 
             cfg = get_position_manager_config()
             actions_taken: list[dict[str, Any]] = []

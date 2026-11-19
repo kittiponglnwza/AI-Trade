@@ -234,6 +234,58 @@ def notify_discord_execution_result(proposal: dict[str, Any], action: str, detai
         return False
 
 
+def notify_discord_trade_closed(
+    trade: dict[str, Any],
+    current_balance: float | None = None,
+    stats: dict[str, Any] | None = None,
+) -> bool:
+    """Send a Discord Rich Embed summary when a trade finishes/closes (TP, SL, or Manual Close)."""
+    cfg = get_discord_config()
+    if not cfg.get("enabled") or not cfg.get("webhook_url"):
+        return False
+    try:
+        net = float(trade.get("net_profit") or 0.0)
+        is_win = net >= 0
+        symbol = str(trade.get("symbol") or "XAUUSD")
+        side = str(trade.get("side") or "BUY")
+        vol = float(trade.get("volume") or 0.01)
+        entry = trade.get("entry_price")
+        exit_p = trade.get("exit_price")
+        pos_id = trade.get("mt5_position_id") or trade.get("mt5_deal_ticket") or trade.get("id")
+        sign = "+" if net >= 0 else ""
+
+        bal_txt = f"`${current_balance:,.2f}`" if current_balance is not None else "—"
+        wr_txt = (
+            f"`{stats['win_rate_pct']:.1f}%` ({stats['wins']}W/{stats['losses']}L · Net `{('+' if stats['net_profit']>=0 else '')}${stats['net_profit']:.2f}`)"
+            if stats
+            else "—"
+        )
+
+        embed = {
+            "title": (
+                f"🏆 [ปิดไม้กำไร WIN {sign}${net:.2f}] #{pos_id} · {side} {vol:.2f} {symbol}"
+                if is_win
+                else f"🛑 [ปิดไม้ขาดทุน LOSS {sign}${net:.2f}] #{pos_id} · {side} {vol:.2f} {symbol}"
+            ),
+            "description": f"ออเดอร์ `#{pos_id}` ({side} {vol:.2f} Lot `{symbol}`) จบไม้เรียบร้อยแล้ว",
+            "color": 0x3FB950 if is_win else 0xF14C4C,
+            "fields": [
+                {"name": "Net P/L (กำไรสุทธิ)", "value": f"**{sign}${net:.2f}**", "inline": True},
+                {"name": "Entry -> Exit", "value": f"`{entry}` -> `{exit_p}`", "inline": True},
+                {"name": "ยอดพอร์ตล่าสุด (Balance)", "value": bal_txt, "inline": True},
+                {"name": "สถิติรวมพอร์ต", "value": wr_txt, "inline": False},
+            ],
+            "footer": {
+                "text": f"MT5 Trade Journal · Closed at {trade.get('close_time') or datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            },
+        }
+        send_discord_webhook({"username": "MT5 Trade Journal", "embeds": [embed]})
+        return True
+    except Exception as exc:
+        add_system_log("WARN", "DISCORD", f"Discord trade closed notify warning: {exc}", symbol=str(trade.get("symbol", "")))
+        return False
+
+
 def test_discord_connection(webhook_url: str | None = None, public_base_url: str | None = None) -> dict[str, Any]:
     """Send a test embed to verify the user's Discord Webhook URL."""
     cfg = get_discord_config()
