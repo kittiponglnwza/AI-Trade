@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { AlertCircle, Check, Clock, ShieldAlert, Sparkles, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  ExternalLink,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { confirmProposal, rejectProposal } from "../services/api";
 import type { AccountSummary, TradeProposal } from "../types/trading";
 
@@ -11,6 +22,7 @@ interface ProposalsQueueProps {
 
 export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueueProps) {
   const [confirmTarget, setConfirmTarget] = useState<TradeProposal | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -80,25 +92,30 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
           <Clock className="mx-auto mb-2 h-5 w-5 text-[#6e6e6e]" />
           <p className="text-[#cccccc]">ยังไม่มีแผนเทรดรอกดยืนยัน</p>
           <p className="mt-1 text-[11px] text-[#6e6e6e]">
-            สั่งให้ AI วิเคราะห์ในแชท หรือสลับไปแท็บ &ldquo;วางแผนเอง&rdquo; ด้านบน
+            Watchdog กำลังเฝ้าตลาดให้ 24/7 หรือไปที่แท็บ &ldquo;Gauntlet & News&rdquo; เพื่อสแกนทันที
           </p>
         </div>
       ) : (
         <div className="space-y-2.5">
           {pending.map((p) => {
             const isBuy = p.side.startsWith("BUY");
+            const gates = p.gauntlet?.gates ?? [];
+            const newsList = p.news ?? [];
+            const hasEvidence = gates.length > 0 || newsList.length > 0;
+            const isExpanded = expandedId === p.id;
+
             return (
               <div
                 key={p.id}
                 className="rounded border border-[#007acc]/70 bg-[#1e1e1e] p-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span
                       className={`rounded px-2 py-0.5 text-[11px] font-bold ${
                         isBuy
-                          ? "bg-[#3fb950]/15 text-[#3fb950] border border-[#3fb950]/30"
-                          : "bg-[#f14c4c]/15 text-[#f14c4c] border border-[#f14c4c]/30"
+                          ? "border border-[#3fb950]/30 bg-[#3fb950]/15 text-[#3fb950]"
+                          : "border border-[#f14c4c]/30 bg-[#f14c4c]/15 text-[#f14c4c]"
                       }`}
                     >
                       {p.side}
@@ -109,6 +126,12 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                     <span className="rounded border border-[#3c3c3c] bg-[#252526] px-1.5 py-0.5 text-[10px] font-medium text-[#4fc1ff]">
                       {p.source} · {p.timeframe}
                     </span>
+                    {p.gauntlet?.total_gates ? (
+                      <span className="inline-flex items-center gap-1 rounded border border-[#3fb950]/40 bg-[#3fb950]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#3fb950]">
+                        <ShieldCheck className="h-3 w-3" />
+                        Gauntlet {p.gauntlet.passed_count}/{p.gauntlet.total_gates}
+                      </span>
+                    ) : null}
                   </div>
                   <span className="font-mono-num text-[11px] text-[#6e6e6e]">#{p.id}</span>
                 </div>
@@ -148,6 +171,62 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
                   <p className="mt-2 rounded border border-[#2b2b2b] bg-[#181818] p-2 text-[11px] leading-relaxed text-[#cccccc] break-words">
                     {p.rationale}
                   </p>
+                )}
+
+                {hasEvidence && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(isExpanded ? null : p.id)}
+                      className="flex w-full items-center justify-between rounded border border-[#2b2b2b] bg-[#252526] px-2.5 py-1.5 text-[11px] font-medium text-[#4fc1ff] hover:bg-[#2a2d2e]"
+                    >
+                      <span>หลักฐาน Gauntlet & ลิงก์ข่าวอ้างอิง ({newsList.length} ข่าว)</span>
+                      {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </button>
+
+                    {isExpanded && (
+                      <div className="mt-1.5 space-y-2 rounded border border-[#2b2b2b] bg-[#181818] p-2 text-[11px]">
+                        {gates.length > 0 && (
+                          <div className="space-y-1">
+                            {gates.map((g) => (
+                              <div key={g.id} className="flex items-center justify-between gap-2">
+                                <span className="text-[#9d9d9d]">{g.label}</span>
+                                <span
+                                  className={`font-mono-num font-semibold ${
+                                    g.status === "PASS"
+                                      ? "text-[#3fb950]"
+                                      : g.status === "WARN"
+                                      ? "text-[#dcdcaa]"
+                                      : "text-[#f14c4c]"
+                                  }`}
+                                >
+                                  {g.status} ({g.metric})
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {newsList.length > 0 && (
+                          <div className="border-t border-[#2b2b2b] pt-1.5 space-y-1">
+                            {newsList.slice(0, 4).map((n, idx) => (
+                              <a
+                                key={`${n.url}-${idx}`}
+                                href={n.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-start justify-between gap-1.5 text-[#4fc1ff] hover:underline"
+                              >
+                                <span className="line-clamp-2 break-words">
+                                  [{n.source}] {n.title}
+                                </span>
+                                <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 <div className="mt-3 grid grid-cols-2 gap-2">

@@ -1,13 +1,22 @@
 import type {
   AuditEvent,
+  BacktestResult,
   CandlesResponse,
+  GauntletEvaluation,
   MarketSnapshot,
+  NewsResponse,
   OrderCheckResult,
   OrderSide,
+  SheetsConfig,
+  SymbolSearchItem,
+  SystemLogEntry,
   Timeframe,
   TradeLogEntry,
   TradeProposal,
   TradingStats,
+  WatchdogConfig,
+  WatchdogStatus,
+  WatchlistQuote,
 } from "../types/trading";
 
 const STORAGE_URL_KEY = "mt5_bridge_url";
@@ -22,8 +31,6 @@ export function getBridgeConfig(): BridgeConfig {
   const savedUrl = localStorage.getItem(STORAGE_URL_KEY);
   const savedKey = localStorage.getItem(STORAGE_API_KEY);
 
-  // In local dev without custom override, empty string uses Vite's /api + /ws proxy cleanly.
-  // In production (Vercel), VITE_API_URL or SettingsModal supplies the HTTPS tunnel URL.
   const defaultUrl = import.meta.env.DEV
     ? ""
     : (import.meta.env.VITE_API_URL || "http://localhost:8000");
@@ -242,4 +249,112 @@ export function fetchStats(sync = false) {
 export function getExportCsvUrl(): string {
   const { baseUrl } = getBridgeConfig();
   return `${baseUrl}/api/logs/export.csv`;
+}
+
+export function searchSymbols(q: string, category?: string, limit = 40) {
+  const sp = new URLSearchParams({ q, limit: String(limit) });
+  if (category && category !== "all") sp.set("category", category);
+  return requestJson<{ symbols: SymbolSearchItem[]; count: number }>(`/api/symbols?${sp.toString()}`);
+}
+
+export function fetchWatchlist() {
+  return requestJson<{ symbols: string[]; quotes: WatchlistQuote[] }>("/api/watchlist");
+}
+
+export function updateWatchlist(symbols: string[]) {
+  return requestJson<{ symbols: string[]; quotes: WatchlistQuote[] }>(
+    "/api/watchlist",
+    {
+      method: "PUT",
+      body: JSON.stringify({ symbols }),
+    },
+    true
+  );
+}
+
+export function fetchNews(symbol: string, refresh = false) {
+  return requestJson<NewsResponse>(
+    `/api/news?symbol=${encodeURIComponent(symbol)}&refresh=${refresh}`
+  );
+}
+
+export function evaluateGauntlet(symbol: string, tf: Timeframe, riskPct = 15, autoQueue = false) {
+  return requestJson<GauntletEvaluation>(
+    "/api/gauntlet/evaluate",
+    {
+      method: "POST",
+      body: JSON.stringify({ symbol, tf, risk_pct: riskPct, auto_queue: autoQueue }),
+    },
+    autoQueue
+  );
+}
+
+export function fetchBacktest(symbol: string, tf: Timeframe, bars = 600) {
+  return requestJson<BacktestResult>(
+    `/api/backtest?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=${bars}`
+  );
+}
+
+export function fetchWatchdogStatus() {
+  return requestJson<WatchdogStatus>("/api/watchdog/status");
+}
+
+export function updateWatchdogConfig(patch: Partial<WatchdogConfig>) {
+  return requestJson<WatchdogStatus>(
+    "/api/watchdog/config",
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    },
+    true
+  );
+}
+
+export function triggerWatchdogScan(symbol?: string) {
+  const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+  return requestJson<{ scan: Record<string, unknown>; status: WatchdogStatus }>(
+    `/api/watchdog/scan${q}`,
+    { method: "POST" },
+    true
+  );
+}
+
+export function fetchSystemLogs(params?: { category?: string; level?: string; limit?: number }) {
+  const sp = new URLSearchParams();
+  if (params?.category) sp.set("category", params.category);
+  if (params?.level) sp.set("level", params.level);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const qs = sp.toString() ? `?${sp.toString()}` : "";
+  return requestJson<{ logs: SystemLogEntry[]; count: number }>(`/api/system-logs${qs}`);
+}
+
+export function fetchSheetsConfig() {
+  return requestJson<SheetsConfig>("/api/sheets/config");
+}
+
+export function saveSheetsConfig(cfg: Partial<SheetsConfig>) {
+  return requestJson<SheetsConfig>(
+    "/api/sheets/config",
+    {
+      method: "PUT",
+      body: JSON.stringify(cfg),
+    },
+    true
+  );
+}
+
+export function testSheetsConnection() {
+  return requestJson<{ ok: boolean; mode?: string; response?: unknown }>(
+    "/api/sheets/test",
+    { method: "POST" },
+    true
+  );
+}
+
+export function syncAllSheets() {
+  return requestJson<{ ok: boolean; written: Record<string, number> }>(
+    "/api/sheets/sync-all",
+    { method: "POST" },
+    true
+  );
 }

@@ -13,6 +13,7 @@ import type { AccountSummary, AppTab, QuoteInfo, WsStatus } from "../types/tradi
 interface HeaderBarProps {
   wsStatus: WsStatus;
   mt5Connected: boolean;
+  watchdogRunning: boolean;
   account: AccountSummary | null;
   quote: QuoteInfo | null;
   activeTab: AppTab;
@@ -24,6 +25,7 @@ interface HeaderBarProps {
 export function HeaderBar({
   wsStatus,
   mt5Connected,
+  watchdogRunning,
   account,
   quote,
   activeTab,
@@ -40,7 +42,7 @@ export function HeaderBar({
       setPriceDir(quote.bid > prevBidRef.current ? "up" : "down");
     }
     prevBidRef.current = quote.bid;
-  }, [quote?.bid]);
+  }, [quote?.bid, quote?.symbol]);
 
   const statusColor =
     wsStatus === "LIVE" && mt5Connected
@@ -72,8 +74,9 @@ export function HeaderBar({
 
   const tabs: { id: AppTab; label: string; icon: typeof CandlestickChart }[] = [
     { id: "desk", label: "Trading Desk", icon: CandlestickChart },
+    { id: "gauntlet", label: "Gauntlet & News", icon: ShieldCheck },
     { id: "stats", label: "Analytics & Stats", icon: BarChart3 },
-    { id: "journal", label: "Trade Journal", icon: BookOpen },
+    { id: "journal", label: "Logs & Journal", icon: BookOpen },
   ];
 
   return (
@@ -86,7 +89,7 @@ export function HeaderBar({
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-sm font-semibold tracking-tight text-[#e1e1e1]">
-                XAUUSD AI Trading Desk
+                AI Multi-Market Desk
               </h1>
               {account && (
                 <span
@@ -97,6 +100,11 @@ export function HeaderBar({
                   }`}
                 >
                   {account.trade_mode}
+                </span>
+              )}
+              {watchdogRunning && (
+                <span className="hidden rounded border border-[#3fb950]/30 bg-[#3fb950]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#3fb950] sm:inline">
+                  24/7 WATCHDOG
                 </span>
               )}
             </div>
@@ -143,7 +151,7 @@ export function HeaderBar({
                   key={tab.id}
                   type="button"
                   onClick={() => onTabChange(tab.id)}
-                  className={`relative flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition ${
+                  className={`relative flex items-center gap-1.5 border-b-2 px-2.5 py-2 text-xs font-medium transition sm:px-3 ${
                     active
                       ? "border-[#007acc] bg-[#1e1e1e] text-white"
                       : "border-transparent text-[#9d9d9d] hover:bg-[#2a2d2e] hover:text-[#e1e1e1]"
@@ -194,7 +202,7 @@ export function HeaderBar({
             type="button"
             onClick={onOpenSettings}
             className="flex h-7 w-7 items-center justify-center rounded border border-[#3c3c3c] bg-[#252526] text-[#cccccc] transition hover:bg-[#313131] hover:text-white"
-            title="Bridge Settings"
+            title="Bridge & Google Sheets Settings"
           >
             <Settings className="h-3.5 w-3.5" />
           </button>

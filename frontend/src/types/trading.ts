@@ -8,7 +8,7 @@ export type OrderSide =
 
 export type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1";
 
-export type AppTab = "desk" | "stats" | "journal";
+export type AppTab = "desk" | "gauntlet" | "stats" | "journal";
 
 export type WsStatus = "LIVE" | "RECONNECTING" | "OFFLINE";
 
@@ -33,6 +33,8 @@ export interface AccountSummary {
 
 export interface QuoteInfo {
   symbol: string;
+  description?: string;
+  category?: string;
   bid: number;
   ask: number;
   spread_price: number;
@@ -145,6 +147,128 @@ export interface OrderCheckResult {
   valid: boolean;
 }
 
+export interface NewsArticle {
+  title: string;
+  source: string;
+  url: string;
+  published: string;
+  sentiment_tag: "BULLISH" | "BEARISH" | "NEUTRAL" | string;
+  matched_terms: string[];
+}
+
+export interface NewsResponse {
+  symbol: string;
+  fetched_at: string;
+  sentiment: "BULLISH" | "BEARISH" | "NEUTRAL" | string;
+  sentiment_score: number;
+  high_impact_event: boolean;
+  high_impact_keywords: string[];
+  sources_used: string[];
+  articles: NewsArticle[];
+}
+
+export interface GauntletGate {
+  id: string;
+  label: string;
+  status: "PASS" | "WARN" | "FAIL";
+  metric: string;
+  detail: string;
+}
+
+export interface GauntletEvaluation {
+  symbol: string;
+  timeframe: string;
+  evaluated_at: string;
+  verdict: "PASS" | "WAIT" | "REJECT";
+  direction: "BUY" | "SELL" | "WAIT";
+  passed_count: number;
+  warn_count: number;
+  fail_count: number;
+  total_gates: number;
+  rationale: string;
+  quote: QuoteInfo;
+  mtf_snapshot: MtfSummaryRow[];
+  gates: GauntletGate[];
+  proposed_order: {
+    symbol: string;
+    side: OrderSide;
+    order_type: "MARKET" | "PENDING";
+    entry_price: number;
+    sl: number;
+    tp: number;
+    risk_pct: number;
+    lots: number;
+    est_risk_usd: number;
+    est_risk_pct: number;
+    est_reward_usd: number;
+    rr_ratio: number;
+    required_margin: number;
+    timeframe: string;
+    rationale: string;
+  } | null;
+  news_summary: {
+    sentiment: string;
+    sentiment_score: number;
+    high_impact_event: boolean;
+    high_impact_keywords: string[];
+    sources_used: string[];
+  };
+  news: NewsArticle[];
+  queued_proposal?: TradeProposal | null;
+}
+
+export interface BacktestTrade {
+  side: "BUY" | "SELL";
+  entry_time: string;
+  exit_time: string;
+  entry: number;
+  exit: number;
+  sl: number;
+  tp: number;
+  result_r: number;
+  outcome: "WIN" | "LOSS";
+}
+
+export interface BacktestResult {
+  symbol: string;
+  tf: string;
+  bars_tested: number;
+  start_time: string;
+  end_time: string;
+  rule_summary: string;
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number;
+  profit_factor: number | null;
+  net_r: number;
+  expectancy_r: number;
+  max_drawdown_r: number;
+  equity_r_curve: { trade: number; time: string; cum_r: number }[];
+  recent_trades: BacktestTrade[];
+}
+
+export interface SymbolSearchItem {
+  name: string;
+  description: string;
+  category: string;
+  digits: number;
+}
+
+export interface WatchlistQuote {
+  symbol: string;
+  description: string;
+  category: string;
+  bid: number;
+  ask: number;
+  digits: number;
+  spread_points: number;
+  change_pct: number;
+  market_open: boolean;
+  tick_time_server?: string;
+  error?: string;
+}
+
 export interface TradeProposal {
   id: number;
   created_at: string;
@@ -168,6 +292,13 @@ export interface TradeProposal {
   mt5_deal_ticket: number | null;
   exec_price: number | null;
   exec_comment: string | null;
+  gauntlet?: {
+    verdict?: string;
+    passed_count?: number;
+    total_gates?: number;
+    gates?: GauntletGate[];
+  };
+  news?: NewsArticle[];
 }
 
 export interface TradeLogEntry {
@@ -203,6 +334,52 @@ export interface AuditEvent {
   actor: string;
   summary: string;
   payload_json: string;
+}
+
+export interface SystemLogEntry {
+  id: number;
+  created_at: string;
+  level: "INFO" | "SIGNAL" | "WARN" | "ERROR" | string;
+  category: string;
+  symbol: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface WatchdogConfig {
+  enabled: boolean;
+  interval_sec: number;
+  timeframe: string;
+  risk_pct: number;
+  auto_propose: boolean;
+  cooldown_min: number;
+}
+
+export interface WatchdogScanItem {
+  symbol: string;
+  timeframe: string;
+  verdict: string;
+  direction: string;
+  passed_count: number;
+  total_gates: number;
+  evaluated_at: string;
+  bid: number;
+  sentiment: string;
+}
+
+export interface WatchdogStatus {
+  running: boolean;
+  scanning_now: boolean;
+  last_scan_at: string | null;
+  config: WatchdogConfig;
+  last_results: WatchdogScanItem[];
+}
+
+export interface SheetsConfig {
+  enabled: boolean;
+  webhook_url: string;
+  service_account_file: string;
+  sheet_id: string;
 }
 
 export interface EquityPoint {
@@ -264,6 +441,9 @@ export interface WsLivePacket {
   symbol?: string;
   tf?: string;
   pending_proposals_count?: number;
+  latest_log_id?: number;
+  watchdog_running?: boolean;
+  watchdog_scanning?: boolean;
   account?: AccountSummary | null;
   quote?: QuoteInfo | null;
   positions?: OpenPosition[];

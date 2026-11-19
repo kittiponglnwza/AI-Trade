@@ -7,6 +7,7 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
+import { Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import type {
   CandlePoint,
   ChartPreviewLevels,
@@ -46,10 +47,15 @@ export function LiveChartPanel({
   const ema200SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const lastCandleTimeRef = useRef<number>(0);
+  const prevChartKeyRef = useRef<string>("");
 
   const [showEma20, setShowEma20] = useState(true);
   const [showEma50, setShowEma50] = useState(true);
   const [showEma200, setShowEma200] = useState(true);
+  const [autoScaleY, setAutoScaleY] = useState(true);
+  const [tallMode, setTallMode] = useState(false);
+
+  const chartHeight = tallMode ? 640 : 440;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -68,16 +74,43 @@ export function LiveChartPanel({
         vertLine: { color: "#555555", style: LineStyle.Dashed },
         horzLine: { color: "#555555", style: LineStyle.Dashed },
       },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: {
+          time: true,
+          price: true,
+        },
+        axisDoubleClickReset: {
+          time: true,
+          price: true,
+        },
+      },
       rightPriceScale: {
         borderColor: "#2b2b2b",
+        autoScale: true,
+        scaleMargins: {
+          top: 0.12,
+          bottom: 0.12,
+        },
       },
       timeScale: {
         borderColor: "#2b2b2b",
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 12,
+        barSpacing: 11,
+        minBarSpacing: 3,
+        lockVisibleTimeRangeOnResize: true,
       },
       width: el.clientWidth,
-      height: 430,
+      height: chartHeight,
     });
 
     const candleSeries = chart.addCandlestickSeries({
@@ -136,6 +169,14 @@ export function LiveChartPanel({
   }, []);
 
   useEffect(() => {
+    chartRef.current?.applyOptions({ height: chartHeight });
+  }, [chartHeight]);
+
+  useEffect(() => {
+    chartRef.current?.priceScale("right").applyOptions({ autoScale: autoScaleY });
+  }, [autoScaleY]);
+
+  useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
     const ohlc = candles.map((c) => ({
@@ -170,8 +211,17 @@ export function LiveChartPanel({
       );
     }
 
-    chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+    const chartKey = `${symbol}:${timeframe}`;
+    if (prevChartKeyRef.current !== chartKey) {
+      prevChartKeyRef.current = chartKey;
+      const total = candles.length;
+      const fromIdx = Math.max(0, total - 80);
+      chartRef.current?.timeScale().setVisibleLogicalRange({
+        from: fromIdx,
+        to: total + 8,
+      });
+    }
+  }, [candles, symbol, timeframe]);
 
   useEffect(() => {
     ema20SeriesRef.current?.applyOptions({ visible: showEma20 });
@@ -289,6 +339,31 @@ export function LiveChartPanel({
     }
   }, [positions, previewLevels, symbol, candles]);
 
+  const handleZoom = (factor: number) => {
+    const ts = chartRef.current?.timeScale();
+    if (!ts) return;
+    const range = ts.getVisibleLogicalRange();
+    if (!range) return;
+    const span = range.to - range.from;
+    const nextSpan = Math.max(12, Math.min(candles.length + 30, span * factor));
+    const rightAnchor = range.to;
+    ts.setVisibleLogicalRange({
+      from: rightAnchor - nextSpan,
+      to: rightAnchor,
+    });
+  };
+
+  const handleResetView = () => {
+    const ts = chartRef.current?.timeScale();
+    if (!ts || candles.length === 0) return;
+    setAutoScaleY(true);
+    chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+    ts.setVisibleLogicalRange({
+      from: Math.max(0, candles.length - 80),
+      to: candles.length + 8,
+    });
+  };
+
   const latestCandle = lastBar ?? candles[candles.length - 1] ?? null;
 
   return (
@@ -311,8 +386,53 @@ export function LiveChartPanel({
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex cursor-pointer items-center gap-1.5 text-[#dcdcaa]">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex items-center gap-1 rounded border border-[#3c3c3c] bg-[#1e1e1e] p-0.5">
+            <button
+              type="button"
+              onClick={() => handleZoom(0.7)}
+              className="rounded p-1 text-[#cccccc] hover:bg-[#313131]"
+              title="Zoom In (+)"
+            >
+              <ZoomIn className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => handleZoom(1.4)}
+              className="rounded p-1 text-[#cccccc] hover:bg-[#313131]"
+              title="Zoom Out (-)"
+            >
+              <ZoomOut className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleResetView}
+              className="rounded p-1 text-[#cccccc] hover:bg-[#313131]"
+              title="Reset Fit"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setAutoScaleY((v) => !v)}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                autoScaleY ? "bg-[#007acc] text-white" : "text-[#9d9d9d] hover:bg-[#313131]"
+              }`}
+              title="Toggle Price Auto-Scale"
+            >
+              Auto-Y
+            </button>
+            <button
+              type="button"
+              onClick={() => setTallMode((v) => !v)}
+              className="rounded p-1 text-[#cccccc] hover:bg-[#313131]"
+              title={tallMode ? "Compact Chart Height" : "Expand Chart Height"}
+            >
+              {tallMode ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-1 text-[#dcdcaa]">
             <input
               type="checkbox"
               checked={showEma20}
@@ -321,7 +441,7 @@ export function LiveChartPanel({
             />
             EMA20
           </label>
-          <label className="flex cursor-pointer items-center gap-1.5 text-[#4fc1ff]">
+          <label className="flex cursor-pointer items-center gap-1 text-[#4fc1ff]">
             <input
               type="checkbox"
               checked={showEma50}
@@ -330,7 +450,7 @@ export function LiveChartPanel({
             />
             EMA50
           </label>
-          <label className="flex cursor-pointer items-center gap-1.5 text-[#c586c0]">
+          <label className="flex cursor-pointer items-center gap-1 text-[#c586c0]">
             <input
               type="checkbox"
               checked={showEma200}
@@ -341,12 +461,12 @@ export function LiveChartPanel({
           </label>
           {latestCandle?.rsi14 != null && (
             <span className="font-mono-num rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-0.5 text-[#9d9d9d]">
-              RSI14: <strong className="text-[#4fc1ff]">{latestCandle.rsi14.toFixed(1)}</strong>
+              RSI: <strong className="text-[#4fc1ff]">{latestCandle.rsi14.toFixed(1)}</strong>
             </span>
           )}
           {latestCandle?.atr14 != null && (
             <span className="font-mono-num rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-0.5 text-[#9d9d9d]">
-              ATR14: <strong className="text-[#dcdcaa]">${latestCandle.atr14.toFixed(2)}</strong>
+              ATR: <strong className="text-[#dcdcaa]">${latestCandle.atr14.toFixed(2)}</strong>
             </span>
           )}
         </div>
@@ -354,8 +474,13 @@ export function LiveChartPanel({
 
       <div ref={containerRef} className="mt-2.5 w-full overflow-hidden rounded border border-[#2b2b2b]" />
 
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-[#6e6e6e]">
+        <span>Scroll: Zoom · Drag: Pan · Drag Price Axis: Scale Y · Double-Click Axis: Reset</span>
+        <span className="font-mono-num">{symbol} · {timeframe} ({candles.length} bars)</span>
+      </div>
+
       {mtf.length > 0 && (
-        <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {mtf.map((row) => {
             const isBull = row.trend.includes("BULL");
             const isBear = row.trend.includes("BEAR");

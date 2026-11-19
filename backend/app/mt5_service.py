@@ -87,13 +87,19 @@ class MT5BridgeService:
                 return self.connect()
             return True
 
-    def _wait_for_tick(self, symbol: str, timeout: float = 3.0) -> Any:
-        deadline = time.monotonic() + timeout
+    def _wait_for_tick(self, symbol: str, timeout: float = 0.6) -> Any:
+        info = mt5.symbol_info(symbol)
         tick = mt5.symbol_info_tick(symbol)
+        if tick is not None and tick.bid > 0 and tick.ask > 0 and tick.time > 0:
+            return tick
+        if info is not None and info.bid > 0 and info.ask > 0 and info.time > 0:
+            return tick if tick is not None and tick.bid > 0 else info
+
+        deadline = time.monotonic() + timeout
         while tick is None or tick.bid <= 0 or tick.ask <= 0 or tick.time <= 0:
             if time.monotonic() >= deadline:
                 break
-            time.sleep(0.1)
+            time.sleep(0.08)
             tick = mt5.symbol_info_tick(symbol)
         return tick
 
@@ -229,21 +235,34 @@ class MT5BridgeService:
         with self._lock:
             resolved = self.resolve_symbol(symbol)
             sym = mt5.symbol_info(resolved)
-            tick = self._wait_for_tick(resolved, timeout=1.5)
-            if sym is None or tick is None:
+            tick = self._wait_for_tick(resolved, timeout=0.6)
+            if sym is None:
                 raise RuntimeError(f"Failed to read quote for {resolved}: {mt5.last_error()}")
 
-            spread_price = float(tick.ask - tick.bid)
+            bid = float(tick.bid) if tick is not None and tick.bid > 0 else float(sym.bid)
+            ask = float(tick.ask) if tick is not None and tick.ask > 0 else float(sym.ask)
+            tick_epoch = int(tick.time) if tick is not None and tick.time > 0 else int(sym.time)
+
+            if bid <= 0:
+                rates = mt5.copy_rates_from_pos(resolved, mt5.TIMEFRAME_D1, 0, 1)
+                if rates is not None and len(rates) > 0:
+                    bid = float(rates[-1]["close"])
+                    ask = bid
+                    tick_epoch = int(rates[-1]["time"])
+
+            spread_price = max(0.0, float(ask - bid))
             spread_points = round(spread_price / sym.point) if sym.point > 0 else 0
             server_dt = (
-                datetime.fromtimestamp(int(tick.time), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                if tick.time > 0
+                datetime.fromtimestamp(tick_epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                if tick_epoch > 0
                 else ""
             )
             return {
                 "symbol": resolved,
-                "bid": round(float(tick.bid), int(sym.digits)),
-                "ask": round(float(tick.ask), int(sym.digits)),
+                "description": str(sym.description or resolved),
+                "category": str(sym.path.split("\\")[0] if sym.path else "Market"),
+                "bid": round(bid, int(sym.digits)),
+                "ask": round(ask, int(sym.digits)),
                 "spread_price": round(spread_price, int(sym.digits)),
                 "spread_points": int(spread_points),
                 "digits": int(sym.digits),
@@ -254,7 +273,7 @@ class MT5BridgeService:
                 "volume_step": float(sym.volume_step),
                 "stops_level_points": int(sym.trade_stops_level),
                 "stops_level_price": round(float(sym.trade_stops_level * sym.point), int(sym.digits)),
-                "tick_epoch": int(tick.time),
+                "tick_epoch": tick_epoch,
                 "tick_time_server": server_dt,
             }
 
@@ -907,6 +926,117 @@ class MT5BridgeService:
 
         closed.sort(key=lambda item: item["close_time"], reverse=True)
         return closed
+
+    def search_symbols(
+        self,
+        query: str = "",
+        category: str | None = None,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        """Search tradable MT5 symbols by ticker name, description, or category."""
+        with self._lock:
+            self.ensure_connected()
+            symbols = mt5.symbols_get()
+            if not symbols:
+                return []
+
+            q = query.strip().upper()
+            cat_filter = category.strip().lower() if category else None
+            matches: list[tuple[int, int, str, dict[str, Any]]] = []
+
+            for s in symbols:
+                if s.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+                    continue
+                root_cat = s.path.split("\\")[0] if s.path else "Other"
+                if cat_filter and cat_filter != "all" and root_cat.lower() != cat_filter:
+                    continue
+
+                name_u = s.name.upper()
+                desc_u = (s.description or "").upper()
+                if q:
+                    if name_u == q:
+                        rank = 0
+                    elif name_u.startswith(q):
+                        rank = 1
+                    elif q in name_u:
+                        rank = 2
+                    elif q in desc_u:
+                        rank = 3
+                    else:
+                        continue
+                else:
+                    rank = 0 if s.visible else 1
+
+                matches.append(
+                    (
+                        rank,
+                        len(s.name),
+                        s.name,
+                        {
+                            "name": str(s.name),
+                            "description": str(s.description or s.name),
+                            "category": root_cat,
+                            "digits": int(s.digits),
+                        },
+                    )
+                )
+
+            matches.sort(key=lambda item: (item[0], item[1], item[2]))
+            return [m[3] for m in matches[:limit]]
+
+    def get_watchlist_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+        """Fetch fast live quotes, D1 % change, and market-open status for a watchlist."""
+        with self._lock:
+            self.ensure_connected()
+            ref_tick = mt5.symbol_info_tick("XAUUSD")
+            ref_epoch = int(ref_tick.time) if ref_tick and ref_tick.time > 0 else 0
+
+            out: list[dict[str, Any]] = []
+            for raw_sym in symbols:
+                try:
+                    quote = self.get_quote(raw_sym)
+                    resolved = quote["symbol"]
+                    rates = mt5.copy_rates_from_pos(resolved, mt5.TIMEFRAME_D1, 0, 2)
+                    change_pct = 0.0
+                    if rates is not None and len(rates) > 0:
+                        d1_open = float(rates[-1]["open"])
+                        ref_close = quote["bid"] if quote["bid"] > 0 else float(rates[-1]["close"])
+                        if d1_open > 0:
+                            change_pct = round(((ref_close - d1_open) / d1_open) * 100.0, 2)
+
+                    tick_age = abs(ref_epoch - quote["tick_epoch"]) if ref_epoch > 0 and quote["tick_epoch"] > 0 else 0
+                    market_open = quote["tick_epoch"] > 0 and (ref_epoch == 0 or tick_age < 900)
+
+                    out.append(
+                        {
+                            "symbol": resolved,
+                            "description": quote["description"],
+                            "category": quote["category"],
+                            "bid": quote["bid"],
+                            "ask": quote["ask"],
+                            "digits": quote["digits"],
+                            "spread_points": quote["spread_points"],
+                            "change_pct": change_pct,
+                            "market_open": market_open,
+                            "tick_time_server": quote["tick_time_server"],
+                        }
+                    )
+                except Exception as exc:
+                    out.append(
+                        {
+                            "symbol": raw_sym,
+                            "description": raw_sym,
+                            "category": "Unavailable",
+                            "bid": 0.0,
+                            "ask": 0.0,
+                            "digits": 2,
+                            "spread_points": 0,
+                            "change_pct": 0.0,
+                            "market_open": False,
+                            "error": str(exc),
+                        }
+                    )
+            return out
 
 
 mt5_service = MT5BridgeService()

@@ -13,30 +13,53 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.analytics import compute_trading_stats
 from app.config import ALLOWED_ORIGINS, API_KEY, DEFAULT_SYMBOL
 from app.database import (
+    add_system_log,
     create_execution_log,
     create_proposal,
     export_trade_logs_csv,
+    get_latest_system_log_id,
     get_proposal,
+    get_sheets_config,
+    get_watchdog_config,
+    get_watchlist,
     init_db,
     list_audit_events,
     list_proposals,
+    list_system_logs,
     list_trade_logs,
     log_audit,
     record_equity_snapshot,
+    set_sheets_config,
+    set_watchdog_config,
+    set_watchlist,
     update_proposal_status,
     update_trade_log_notes,
     upsert_mt5_deals,
 )
+from app.gauntlet import evaluate_gauntlet, run_historical_backtest
 from app.mt5_service import mt5_service
+from app.news_service import fetch_symbol_news
 from app.schemas import (
+    GauntletEvaluateRequest,
     OrderCheckRequest,
     PositionCloseRequest,
     PositionModifyRequest,
     ProposalConfirmRequest,
     ProposalCreateRequest,
     ProposalRejectRequest,
+    SheetsConfigRequest,
     TradeLogUpdateRequest,
+    WatchdogConfigPatchRequest,
+    WatchlistUpdateRequest,
 )
+from app.sheets_sync import (
+    sync_all_to_sheets,
+    sync_proposal_row,
+    sync_stats_snapshot,
+    sync_trade_rows,
+    test_sheets_connection,
+)
+from app.watcher import watchdog
 
 
 @asynccontextmanager
@@ -46,7 +69,9 @@ async def lifespan(_: FastAPI):
         mt5_service.connect()
     except Exception:
         pass
+    watchdog.start()
     yield
+    await watchdog.stop()
     mt5_service.disconnect()
 
 
@@ -201,6 +226,13 @@ async def post_create_proposal(body: ProposalCreateRequest) -> dict[str, Any]:
         summary=f"Proposed {proposal['side']} {proposal['lots']} {proposal['symbol']} @ {proposal['entry_price']}",
         payload={"proposal_id": proposal["id"], "checked": checked},
     )
+    add_system_log(
+        "SIGNAL",
+        "TRADE",
+        f"Queued Proposal #{proposal['id']} ({proposal['side']} {proposal['lots']} {proposal['symbol']} @ {proposal['entry_price']})",
+        symbol=proposal["symbol"],
+    )
+    asyncio.create_task(asyncio.to_thread(sync_proposal_row, proposal))
     return {"proposal": proposal, "order_check": checked}
 
 
@@ -321,6 +353,16 @@ async def post_confirm_proposal(
         ),
         payload={"proposal_id": proposal_id, "execution": exec_res},
     )
+    add_system_log(
+        "INFO" if exec_res["success"] else "ERROR",
+        "TRADE",
+        f"Proposal #{proposal_id} {'EXECUTED' if exec_res['success'] else 'FAILED'}: {proposal['side']} {exec_res['exec_volume']} {proposal['symbol']} @ {exec_res['exec_price']}",
+        symbol=proposal["symbol"],
+    )
+    if updated_proposal:
+        asyncio.create_task(asyncio.to_thread(sync_proposal_row, updated_proposal))
+    if trade_log:
+        asyncio.create_task(asyncio.to_thread(sync_trade_rows, [trade_log]))
     return {"proposal": updated_proposal, "execution": exec_res, "trade_log": trade_log}
 
 
@@ -343,6 +385,14 @@ async def post_reject_proposal(
         summary=f"Rejected Proposal #{proposal_id} ({proposal['side']} {proposal['symbol']}): {reason}",
         payload={"proposal_id": proposal_id, "reason": reason},
     )
+    add_system_log(
+        "INFO",
+        "TRADE",
+        f"Rejected Proposal #{proposal_id} ({proposal['side']} {proposal['symbol']}): {reason}",
+        symbol=proposal["symbol"],
+    )
+    if updated:
+        asyncio.create_task(asyncio.to_thread(sync_proposal_row, updated))
     return {"proposal": updated}
 
 
@@ -391,6 +441,14 @@ async def post_close_position(
             summary=f"Closed #{ticket} ({res['symbol']}) @ {res.get('close_price', '-')}",
             payload={"close": res, "sync": sync_summary},
         )
+        add_system_log(
+            "INFO",
+            "TRADE",
+            f"Closed #{ticket} ({res['symbol']}) @ {res.get('close_price', '-')}",
+            symbol=res["symbol"],
+        )
+        if sync_summary["inserted"] > 0:
+            asyncio.create_task(asyncio.to_thread(sync_trade_rows, list_trade_logs(limit=sync_summary["inserted"])))
         return {"close": res, "sync": sync_summary}
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
@@ -422,6 +480,13 @@ async def post_sync_logs(days: int = Query(default=90, ge=1, le=3650)) -> dict[s
         summary=f"Synced {summary['total']} closed MT5 deals (new: {summary['inserted']}, updated: {summary['updated']})",
         payload=summary,
     )
+    add_system_log(
+        "INFO",
+        "SYNC",
+        f"Synced {summary['total']} closed MT5 deal(s) (new: {summary['inserted']}, updated: {summary['updated']})",
+    )
+    if summary["inserted"] > 0:
+        asyncio.create_task(asyncio.to_thread(sync_trade_rows, list_trade_logs(limit=summary["inserted"])))
     return summary
 
 
@@ -469,9 +534,196 @@ async def get_stats(sync: bool = Query(default=False)) -> dict[str, Any]:
     return stats
 
 
+@app.get("/api/symbols")
+async def get_symbols(
+    q: str = Query(default=""),
+    category: str | None = Query(default=None),
+    limit: int = Query(default=40, ge=1, le=100),
+) -> dict[str, Any]:
+    try:
+        items = await asyncio.to_thread(mt5_service.search_symbols, q, category, limit)
+        return {"symbols": items, "count": len(items)}
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.get("/api/watchlist")
+async def get_watchlist_endpoint() -> dict[str, Any]:
+    symbols = get_watchlist()
+    quotes: list[dict[str, Any]] = []
+    if await asyncio.to_thread(mt5_service.is_connected):
+        try:
+            quotes = await asyncio.to_thread(mt5_service.get_watchlist_quotes, symbols)
+        except Exception:
+            quotes = []
+    return {"symbols": symbols, "quotes": quotes}
+
+
+@app.put("/api/watchlist", dependencies=[Depends(verify_api_key)])
+async def put_watchlist_endpoint(body: WatchlistUpdateRequest) -> dict[str, Any]:
+    updated = set_watchlist(body.symbols)
+    quotes = []
+    if await asyncio.to_thread(mt5_service.is_connected):
+        quotes = await asyncio.to_thread(mt5_service.get_watchlist_quotes, updated)
+    add_system_log("INFO", "WATCHLIST", f"Updated watchlist ({len(updated)} symbols): {', '.join(updated)}")
+    return {"symbols": updated, "quotes": quotes}
+
+
+@app.get("/api/news")
+async def get_news_endpoint(
+    symbol: str = Query(default=DEFAULT_SYMBOL),
+    refresh: bool = Query(default=False),
+) -> dict[str, Any]:
+    return await asyncio.to_thread(fetch_symbol_news, symbol, refresh)
+
+
+@app.post("/api/gauntlet/evaluate")
+async def post_gauntlet_evaluate(
+    body: GauntletEvaluateRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    if body.auto_queue:
+        verify_api_key(x_api_key)
+
+    try:
+        result = await asyncio.to_thread(evaluate_gauntlet, body.symbol, body.tf, body.risk_pct)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+    add_system_log(
+        "SIGNAL" if result["verdict"] == "PASS" else "INFO",
+        "GAUNTLET",
+        f"Evaluated {result['symbol']} {result['timeframe']}: {result['verdict']} {result['direction']} ({result['passed_count']}/{result['total_gates']})",
+        symbol=result["symbol"],
+    )
+
+    queued_proposal = None
+    if body.auto_queue and result["verdict"] == "PASS" and result.get("proposed_order"):
+        po = result["proposed_order"]
+        queued_proposal = create_proposal(
+            {
+                "source": "GAUNTLET",
+                "symbol": po["symbol"],
+                "side": po["side"],
+                "order_type": po["order_type"],
+                "entry_price": po["entry_price"],
+                "sl": po["sl"],
+                "tp": po["tp"],
+                "risk_pct": po["risk_pct"],
+                "lots": po["lots"],
+                "est_risk_usd": po["est_risk_usd"],
+                "est_reward_usd": po["est_reward_usd"],
+                "rr_ratio": po["rr_ratio"],
+                "rationale": po["rationale"],
+                "timeframe": po["timeframe"],
+                "gauntlet": {
+                    "verdict": result["verdict"],
+                    "passed_count": result["passed_count"],
+                    "total_gates": result["total_gates"],
+                    "gates": result["gates"],
+                },
+                "news": result["news"],
+            }
+        )
+        log_audit(
+            event_type="PROPOSAL_CREATED",
+            actor="GAUNTLET",
+            summary=f"Gauntlet queued Proposal #{queued_proposal['id']}: {po['side']} {po['lots']} {po['symbol']}",
+            payload={"proposal_id": queued_proposal["id"]},
+        )
+        asyncio.create_task(asyncio.to_thread(sync_proposal_row, queued_proposal))
+
+    return {**result, "queued_proposal": queued_proposal}
+
+
+@app.get("/api/backtest")
+async def get_backtest_endpoint(
+    symbol: str = Query(default=DEFAULT_SYMBOL),
+    tf: str = Query(default="M15"),
+    bars: int = Query(default=600, ge=120, le=1500),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(run_historical_backtest, symbol, tf, bars)
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
+
+
+@app.get("/api/watchdog/status")
+async def get_watchdog_status() -> dict[str, Any]:
+    return watchdog.get_status()
+
+
+@app.patch("/api/watchdog/config", dependencies=[Depends(verify_api_key)])
+async def patch_watchdog_config(body: WatchdogConfigPatchRequest) -> dict[str, Any]:
+    patch = body.model_dump(exclude_none=True)
+    updated = set_watchdog_config(patch)
+    add_system_log("INFO", "WATCHDOG", f"Updated watchdog config: {updated}")
+    return watchdog.get_status()
+
+
+@app.post("/api/watchdog/scan", dependencies=[Depends(verify_api_key)])
+async def post_watchdog_scan(symbol: str | None = Query(default=None)) -> dict[str, Any]:
+    override = [symbol] if symbol else None
+    res = await watchdog.run_scan_cycle(symbols_override=override)
+    return {"scan": res, "status": watchdog.get_status()}
+
+
+@app.get("/api/system-logs")
+async def get_system_logs(
+    category: str | None = Query(default=None),
+    level: str | None = Query(default=None),
+    limit: int = Query(default=120, ge=1, le=500),
+) -> dict[str, Any]:
+    logs = list_system_logs(category=category, level=level, limit=limit)
+    return {"logs": logs, "count": len(logs)}
+
+
+@app.get("/api/sheets/config")
+async def get_sheets_config_endpoint() -> dict[str, Any]:
+    cfg = get_sheets_config()
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "webhook_url": cfg.get("webhook_url", ""),
+        "service_account_file": cfg.get("service_account_file", ""),
+        "sheet_id": cfg.get("sheet_id", ""),
+    }
+
+
+@app.put("/api/sheets/config", dependencies=[Depends(verify_api_key)])
+async def put_sheets_config_endpoint(body: SheetsConfigRequest) -> dict[str, Any]:
+    updated = set_sheets_config(body.model_dump(exclude_none=True))
+    add_system_log("INFO", "SHEETS", f"Updated Google Sheets sync config (enabled={updated.get('enabled')})")
+    return updated
+
+
+@app.post("/api/sheets/test", dependencies=[Depends(verify_api_key)])
+async def post_sheets_test() -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(test_sheets_connection)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/sheets/sync-all", dependencies=[Depends(verify_api_key)])
+async def post_sheets_sync_all() -> dict[str, Any]:
+    bal = None
+    if await asyncio.to_thread(mt5_service.is_connected):
+        try:
+            acc = await asyncio.to_thread(mt5_service.get_account_summary)
+            bal = acc["balance"]
+        except Exception:
+            pass
+    try:
+        return await asyncio.to_thread(sync_all_to_sheets, bal)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
     connected = mt5_service.is_connected()
     pending_count = len(list_proposals(status="PENDING", limit=100))
+    latest_log_id = get_latest_system_log_id()
+    wd_status = watchdog.get_status()
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     if not connected:
@@ -482,6 +734,9 @@ def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
             "symbol": symbol,
             "tf": tf,
             "pending_proposals_count": pending_count,
+            "latest_log_id": latest_log_id,
+            "watchdog_running": wd_status["running"] and bool(wd_status["config"].get("enabled", True)),
+            "watchdog_scanning": wd_status["scanning_now"],
             "account": None,
             "quote": None,
             "positions": [],
@@ -504,6 +759,9 @@ def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
         "symbol": resolved,
         "tf": tf.upper(),
         "pending_proposals_count": pending_count,
+        "latest_log_id": latest_log_id,
+        "watchdog_running": wd_status["running"] and bool(wd_status["config"].get("enabled", True)),
+        "watchdog_scanning": wd_status["scanning_now"],
         "account": account,
         "quote": quote,
         "positions": positions,

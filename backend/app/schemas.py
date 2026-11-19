@@ -58,3 +58,30 @@ class PositionCloseRequest(BaseModel):
 class TradeLogUpdateRequest(BaseModel):
     strategy_tag: str | None = Field(default=None, max_length=64)
     notes: str | None = Field(default=None, max_length=1000)
+
+
+class WatchlistUpdateRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=30)
+
+
+class GauntletEvaluateRequest(BaseModel):
+    symbol: str = Field(default="XAUUSD")
+    tf: str = Field(default="M15")
+    risk_pct: float = Field(default=15.0, gt=0, le=50)
+    auto_queue: bool = Field(default=False)
+
+
+class WatchdogConfigPatchRequest(BaseModel):
+    enabled: bool | None = None
+    interval_sec: int | None = Field(default=None, ge=30, le=3600)
+    timeframe: str | None = None
+    risk_pct: float | None = Field(default=None, gt=0, le=50)
+    auto_propose: bool | None = None
+    cooldown_min: int | None = Field(default=None, ge=1, le=1440)
+
+
+class SheetsConfigRequest(BaseModel):
+    enabled: bool | None = None
+    webhook_url: str | None = None
+    service_account_file: str | None = None
+    sheet_id: str | None = None

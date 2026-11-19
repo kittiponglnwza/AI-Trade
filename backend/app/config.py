@@ -36,3 +36,7 @@ PORT: int = int(os.getenv("PORT", "8000"))
 
 DATA_DIR: Path = BACKEND_DIR / "data"
 DB_PATH: Path = DATA_DIR / "trade_journal.db"
+
+GOOGLE_SHEETS_WEBHOOK_URL: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "").strip()
+GOOGLE_SERVICE_ACCOUNT_FILE: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
+GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", "").strip()

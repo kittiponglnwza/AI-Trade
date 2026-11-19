@@ -11,9 +11,35 @@ import sqlite3
 import threading
 from typing import Any
 
-from app.config import DB_PATH
+from app.config import (
+    DB_PATH,
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    GOOGLE_SHEETS_WEBHOOK_URL,
+    GOOGLE_SHEET_ID,
+)
 
 _DB_LOCK = threading.RLock()
+
+DEFAULT_WATCHLIST: list[str] = [
+    "XAUUSD",
+    "NVDA",
+    "AAPL",
+    "TSLA",
+    "MSFT",
+    "US500",
+    "USTEC",
+    "EURUSD",
+    "USDJPY",
+]
+
+DEFAULT_WATCHDOG_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "interval_sec": 120,
+    "timeframe": "M15",
+    "risk_pct": 15.0,
+    "auto_propose": True,
+    "cooldown_min": 30,
+}
 
 
 def utc_now_iso() -> str:
@@ -106,16 +132,59 @@ def init_db(db_path: Path = DB_PATH) -> None:
                     payload_json TEXT NOT NULL DEFAULT '{}'
                 );
 
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    level TEXT NOT NULL DEFAULT 'INFO',
+                    category TEXT NOT NULL DEFAULT 'SYSTEM',
+                    symbol TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_proposals_status ON trade_proposals(status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_logs_status ON trade_logs(status, close_time DESC);
                 CREATE INDEX IF NOT EXISTS idx_logs_pos ON trade_logs(mt5_position_id);
                 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_syslogs_id ON system_logs(id DESC);
+                CREATE INDEX IF NOT EXISTS idx_syslogs_cat ON system_logs(category, id DESC);
                 """
             )
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(trade_proposals)").fetchall()
+            }
+            if "gauntlet_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE trade_proposals ADD COLUMN gauntlet_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "news_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE trade_proposals ADD COLUMN news_json TEXT NOT NULL DEFAULT '[]'"
+                )
 
 
 def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
+
+
+def _hydrate_proposal(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    try:
+        item["gauntlet"] = json.loads(item.get("gauntlet_json") or "{}")
+    except Exception:
+        item["gauntlet"] = {}
+    try:
+        item["news"] = json.loads(item.get("news_json") or "[]")
+    except Exception:
+        item["news"] = []
+    return item
 
 
 def log_audit(
@@ -155,6 +224,8 @@ def list_audit_events(limit: int = 50, db_path: Path = DB_PATH) -> list[dict[str
 def create_proposal(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
     """Insert a new trade proposal waiting for user confirmation."""
     now = utc_now_iso()
+    gauntlet_str = json.dumps(data.get("gauntlet") or {}, ensure_ascii=False)
+    news_str = json.dumps(data.get("news") or [], ensure_ascii=False)
     with _DB_LOCK:
         with get_connection(db_path) as conn:
             cur = conn.execute(
@@ -162,8 +233,9 @@ def create_proposal(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, 
                 INSERT INTO trade_proposals (
                     created_at, updated_at, source, symbol, side, order_type,
                     entry_price, sl, tp, risk_pct, lots, est_risk_usd,
-                    est_reward_usd, rr_ratio, rationale, timeframe, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+                    est_reward_usd, rr_ratio, rationale, timeframe, status,
+                    gauntlet_json, news_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
                 """,
                 (
                     now,
@@ -182,10 +254,12 @@ def create_proposal(data: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, 
                     data.get("rr_ratio"),
                     data.get("rationale", ""),
                     data.get("timeframe", "M15"),
+                    gauntlet_str,
+                    news_str,
                 ),
             )
             row = conn.execute("SELECT * FROM trade_proposals WHERE id = ?", (cur.lastrowid,)).fetchone()
-            return dict(row)
+            return _hydrate_proposal(row)
 
 
 def list_proposals(status: str | None = None, limit: int = 50, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
@@ -202,7 +276,7 @@ def list_proposals(status: str | None = None, limit: int = 50, db_path: Path = D
                     "SELECT * FROM trade_proposals ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
-            return _rows_to_dicts(rows)
+            return [_hydrate_proposal(r) for r in rows]
 
 
 def get_proposal(proposal_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
@@ -210,7 +284,7 @@ def get_proposal(proposal_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | 
     with _DB_LOCK:
         with get_connection(db_path) as conn:
             row = conn.execute("SELECT * FROM trade_proposals WHERE id = ?", (proposal_id,)).fetchone()
-            return dict(row) if row else None
+            return _hydrate_proposal(row) if row else None
 
 
 def update_proposal_status(
@@ -240,7 +314,7 @@ def update_proposal_status(
                 (now, status.upper(), mt5_order_ticket, mt5_deal_ticket, exec_price, exec_comment, proposal_id),
             )
             row = conn.execute("SELECT * FROM trade_proposals WHERE id = ?", (proposal_id,)).fetchone()
-            return dict(row) if row else None
+            return _hydrate_proposal(row) if row else None
 
 
 def delete_proposal(proposal_id: int, db_path: Path = DB_PATH) -> None:
@@ -521,3 +595,161 @@ def export_trade_logs_csv(db_path: Path = DB_PATH) -> str:
     for row in rows:
         writer.writerow({k: row.get(k) for k in fieldnames})
     return buf.getvalue()
+
+
+def get_setting(key: str, default: Any = None, db_path: Path = DB_PATH) -> Any:
+    """Read a JSON-encoded setting from app_settings."""
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+            if not row:
+                return default
+            try:
+                return json.loads(row["value"])
+            except Exception:
+                return default
+
+
+def set_setting(key: str, value: Any, db_path: Path = DB_PATH) -> None:
+    """Persist a JSON-encoded setting into app_settings."""
+    now = utc_now_iso()
+    encoded = json.dumps(value, ensure_ascii=False)
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, encoded, now),
+            )
+
+
+def get_watchlist(db_path: Path = DB_PATH) -> list[str]:
+    val = get_setting("watchlist", DEFAULT_WATCHLIST, db_path=db_path)
+    if isinstance(val, list) and val:
+        return [str(s).strip().upper() for s in val if str(s).strip()]
+    return list(DEFAULT_WATCHLIST)
+
+
+def set_watchlist(symbols: list[str], db_path: Path = DB_PATH) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for sym in symbols:
+        s = str(sym).strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            clean.append(s)
+    if not clean:
+        clean = ["XAUUSD"]
+    set_setting("watchlist", clean, db_path=db_path)
+    return clean
+
+
+def get_watchdog_config(db_path: Path = DB_PATH) -> dict[str, Any]:
+    val = get_setting("watchdog_config", {}, db_path=db_path)
+    cfg = dict(DEFAULT_WATCHDOG_CONFIG)
+    if isinstance(val, dict):
+        cfg.update(val)
+    return cfg
+
+
+def set_watchdog_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    cfg = get_watchdog_config(db_path=db_path)
+    for k, v in patch.items():
+        if k in DEFAULT_WATCHDOG_CONFIG and v is not None:
+            cfg[k] = v
+    set_setting("watchdog_config", cfg, db_path=db_path)
+    return cfg
+
+
+def get_sheets_config(db_path: Path = DB_PATH) -> dict[str, Any]:
+    default_cfg = {
+        "enabled": bool(GOOGLE_SHEETS_WEBHOOK_URL or (GOOGLE_SERVICE_ACCOUNT_FILE and GOOGLE_SHEET_ID)),
+        "webhook_url": GOOGLE_SHEETS_WEBHOOK_URL,
+        "service_account_file": GOOGLE_SERVICE_ACCOUNT_FILE,
+        "sheet_id": GOOGLE_SHEET_ID,
+    }
+    val = get_setting("sheets_config", {}, db_path=db_path)
+    if isinstance(val, dict):
+        default_cfg.update({k: v for k, v in val.items() if v is not None})
+    return default_cfg
+
+
+def set_sheets_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    cfg = get_sheets_config(db_path=db_path)
+    for k in ("enabled", "webhook_url", "service_account_file", "sheet_id"):
+        if k in patch and patch[k] is not None:
+            cfg[k] = patch[k]
+    set_setting("sheets_config", cfg, db_path=db_path)
+    return cfg
+
+
+def add_system_log(
+    level: str,
+    category: str,
+    message: str,
+    symbol: str = "",
+    details: dict[str, Any] | None = None,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any]:
+    """Append a structured log entry for the live Web Console & Watchdog stream."""
+    now = utc_now_iso()
+    details_str = json.dumps(details or {}, ensure_ascii=False)
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO system_logs (created_at, level, category, symbol, message, details_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (now, level.upper(), category.upper(), symbol.upper(), message, details_str),
+            )
+            row = conn.execute("SELECT * FROM system_logs WHERE id = ?", (cur.lastrowid,)).fetchone()
+            item = dict(row) if row else {}
+            try:
+                item["details"] = json.loads(item.get("details_json") or "{}")
+            except Exception:
+                item["details"] = {}
+            return item
+
+
+def list_system_logs(
+    category: str | None = None,
+    level: str | None = None,
+    limit: int = 120,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Query recent system/watchdog logs."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if category:
+        clauses.append("UPPER(category) = ?")
+        params.append(category.upper())
+    if level:
+        clauses.append("UPPER(level) = ?")
+        params.append(level.upper())
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"SELECT * FROM system_logs {where_sql} ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                item = dict(r)
+                try:
+                    item["details"] = json.loads(item.get("details_json") or "{}")
+                except Exception:
+                    item["details"] = {}
+                out.append(item)
+            return out
+
+
+def get_latest_system_log_id(db_path: Path = DB_PATH) -> int:
+    """Return the highest system_logs.id for lightweight WebSocket change detection."""
+    with _DB_LOCK:
+        with get_connection(db_path) as conn:
+            row = conn.execute("SELECT MAX(id) AS max_id FROM system_logs").fetchone()
+            return int(row["max_id"]) if row and row["max_id"] is not None else 0
