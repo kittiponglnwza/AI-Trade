@@ -35,6 +35,7 @@ from app.database import (
     log_audit,
     record_equity_snapshot,
     set_discord_config,
+    set_ml_retrain_config,
     set_position_manager_config,
     set_sheets_config,
     set_watchdog_config,
@@ -53,13 +54,15 @@ from app.discord_notify import (
     verify_discord_action_token,
 )
 from app.gauntlet import evaluate_gauntlet, run_historical_backtest
-from app.ml_engine import get_model_status, train_symbol_model
+from app.ml_engine import benchmark_timeframes, get_model_status, ml_retrainer, train_symbol_model
 from app.mt5_service import mt5_service
 from app.news_service import fetch_symbol_news
 from app.position_manager import enrich_open_positions, position_manager
 from app.schemas import (
     DiscordConfigRequest,
     GauntletEvaluateRequest,
+    MLBenchmarkRequest,
+    MLRetrainConfigPatchRequest,
     MLTrainRequest,
     OrderCheckRequest,
     PositionCloseRequest,
@@ -118,8 +121,10 @@ async def lifespan(_: FastAPI):
         pass
     watchdog.start()
     position_manager.start()
+    ml_retrainer.start()
     asyncio.create_task(_initial_supabase_boot_sync())
     yield
+    await ml_retrainer.stop()
     await position_manager.stop()
     await watchdog.stop()
     mt5_service.disconnect()
@@ -888,18 +893,83 @@ async def get_ml_status_endpoint(
 @app.post("/api/ml/train", dependencies=[Depends(verify_api_key)])
 async def post_ml_train_endpoint(body: MLTrainRequest) -> dict[str, Any]:
     try:
-        meta = await asyncio.to_thread(train_symbol_model, body.symbol, body.tf, body.bars)
+        meta = await asyncio.to_thread(
+            train_symbol_model,
+            body.symbol,
+            body.tf,
+            body.bars,
+            body.tp_atr,
+            body.sl_atr,
+            24,
+            body.champion_guard,
+            body.force_promote,
+        )
     except Exception as exc:
         raise _map_mt5_error(exc) from exc
 
-    oos = meta["oos_summary"]
+    oos = meta.get("oos_summary") or {}
+    cg = meta.get("champion_guard") or {}
     add_system_log(
         "INFO",
         "ML",
-        f"Trained LightGBM {meta['symbol']} {meta['tf']} ({meta['bars_used']} bars) | OOS AUC B:{oos['auc_buy']}/S:{oos['auc_sell']} | Net OOS R: {oos['net_r_combined']}",
-        symbol=meta["symbol"],
+        (
+            f"ML v2.0 {meta.get('symbol')} {meta.get('tf')} ({meta.get('bars_used')} bars): "
+            f"{cg.get('decision_reason', 'Trained')} | OOS AUC B:{oos.get('auc_buy')}/S:{oos.get('auc_sell')} | "
+            f"Net OOS R: {oos.get('net_r_combined')}"
+        ),
+        symbol=str(meta.get("symbol") or body.symbol),
     )
-    return {"trained": True, "symbol": meta["symbol"], "tf": meta["tf"], "meta": meta}
+    return {
+        "trained": True,
+        "promoted": bool(cg.get("promoted", True)),
+        "symbol": meta.get("symbol", body.symbol),
+        "tf": meta.get("tf", body.tf.upper()),
+        "meta": meta,
+    }
+
+
+@app.get("/api/ml/retrain/status")
+async def get_ml_retrain_status_endpoint() -> dict[str, Any]:
+    return ml_retrainer.get_status()
+
+
+@app.patch("/api/ml/retrain/config", dependencies=[Depends(verify_api_key)])
+async def patch_ml_retrain_config_endpoint(body: MLRetrainConfigPatchRequest) -> dict[str, Any]:
+    patch = body.model_dump(exclude_none=True)
+    updated = set_ml_retrain_config(patch)
+    add_system_log("INFO", "ML_RETRAIN", f"Updated ML Auto-Retrain config: {updated}")
+    return ml_retrainer.get_status()
+
+
+@app.post("/api/ml/retrain/run", dependencies=[Depends(verify_api_key)])
+async def post_ml_retrain_run_endpoint(
+    symbol: str | None = Query(default=None),
+    tf: str | None = Query(default=None),
+) -> dict[str, Any]:
+    syms = [symbol] if symbol else None
+    res = await ml_retrainer.run_retrain_cycle(symbols_override=syms, tf_override=tf)
+    return {"run": res, "status": ml_retrainer.get_status()}
+
+
+@app.post("/api/ml/benchmark", dependencies=[Depends(verify_api_key)])
+async def post_ml_benchmark_endpoint(body: MLBenchmarkRequest) -> dict[str, Any]:
+    try:
+        res = await asyncio.to_thread(
+            benchmark_timeframes,
+            body.symbol,
+            body.timeframes,
+            body.tp_atr,
+            body.sl_atr,
+        )
+        add_system_log(
+            "INFO",
+            "ML",
+            f"Benchmarked {res['symbol']} {body.timeframes}: Recommended {res['recommended_tf']} ({res['recommended_reason']})",
+            symbol=res["symbol"],
+        )
+        return res
+    except Exception as exc:
+        raise _map_mt5_error(exc) from exc
 
 
 @app.get("/api/backtest")

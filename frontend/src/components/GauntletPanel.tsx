@@ -17,15 +17,20 @@ import {
 import {
   evaluateGauntlet,
   fetchBacktest,
+  fetchMlRetrainStatus,
   fetchMlStatus,
   fetchNews,
   fetchWatchlistScanner,
+  runMlBenchmark,
   trainMlModel,
+  updateMlRetrainConfig,
 } from "../services/api";
 import type {
   BacktestResult,
   GauntletEvaluation,
+  MLBenchmarkResult,
   MLModelStatus,
+  MLRetrainStatus,
   NewsResponse,
   Timeframe,
   WatchlistScannerItem,
@@ -49,9 +54,12 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [news, setNews] = useState<NewsResponse | null>(null);
   const [mlStatus, setMlStatus] = useState<MLModelStatus | null>(null);
+  const [retrainStatus, setRetrainStatus] = useState<MLRetrainStatus | null>(null);
+  const [benchmarkRes, setBenchmarkRes] = useState<MLBenchmarkResult | null>(null);
 
   const [runningGauntlet, setRunningGauntlet] = useState(false);
   const [trainingMl, setTrainingMl] = useState(false);
+  const [benchmarkingMl, setBenchmarkingMl] = useState(false);
   const [runningBacktest, setRunningBacktest] = useState(false);
   const [scanningWatchlist, setScanningWatchlist] = useState(false);
   const [scannerItems, setScannerItems] = useState<WatchlistScannerItem[] | null>(null);
@@ -77,6 +85,12 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
       })
       .catch(() => {});
 
+    fetchMlRetrainStatus()
+      .then((res) => {
+        if (active) setRetrainStatus(res);
+      })
+      .catch(() => {});
+
     return () => {
       active = false;
     };
@@ -87,17 +101,53 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
     setErrMsg(null);
     setStatusMsg(null);
     try {
-      const barsNum = Math.min(12000, Math.max(1000, parseInt(trainBars, 10) || 10000));
-      const res = await trainMlModel(symbol, timeframe, barsNum);
+      const barsNum = Math.min(12000, Math.max(1500, parseInt(trainBars, 10) || 8000));
+      const tpM = Math.max(0.5, parseFloat(tpAtrMult) || 2.5);
+      const slM = Math.max(0.4, parseFloat(slAtrMult) || 1.5);
+      const res = await trainMlModel(symbol, timeframe, barsNum, tpM, slM, true);
       setMlStatus(res);
       const oos = res.meta?.oos_summary;
+      const cg = res.meta?.champion_guard;
       setStatusMsg(
-        `เทรนโมเดล LightGBM (${res.symbol} ${res.tf} · ${barsNum} แท่ง) สำเร็จ! OOS AUC B:${oos?.auc_buy ?? "-"}/S:${oos?.auc_sell ?? "-"} · Net OOS: ${oos?.net_r_combined ?? 0}R`
+        `ML v2.0 (${res.symbol} ${res.tf} · ${res.meta?.bars_used ?? barsNum} แท่ง): ${
+          cg?.decision_reason ?? "Trained"
+        } · 5-Fold AUC B:${oos?.auc_buy ?? "-"}/S:${oos?.auc_sell ?? "-"} · Net OOS: ${
+          (oos?.net_r_combined ?? 0) >= 0 ? "+" : ""
+        }${oos?.net_r_combined ?? 0}R`
       );
+      fetchMlRetrainStatus().then(setRetrainStatus).catch(() => {});
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "เทรน ML ไม่สำเร็จ");
     } finally {
       setTrainingMl(false);
+    }
+  };
+
+  const handleBenchmarkMl = async () => {
+    setBenchmarkingMl(true);
+    setErrMsg(null);
+    setStatusMsg(null);
+    try {
+      const tpM = Math.max(0.5, parseFloat(tpAtrMult) || 2.5);
+      const slM = Math.max(0.4, parseFloat(slAtrMult) || 1.5);
+      const res = await runMlBenchmark(symbol, ["M15", "M30", "H1"], tpM, slM);
+      setBenchmarkRes(res);
+      setStatusMsg(`Benchmark M15/M30/H1 สำเร็จ! แนะนำ: ${res.recommended_reason}`);
+      fetchMlStatus(symbol, timeframe).then(setMlStatus).catch(() => {});
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "รัน Benchmark ไม่สำเร็จ");
+    } finally {
+      setBenchmarkingMl(false);
+    }
+  };
+
+  const handleToggleAutoRetrain = async () => {
+    if (!retrainStatus) return;
+    try {
+      const updated = await updateMlRetrainConfig({ enabled: !retrainStatus.config.enabled });
+      setRetrainStatus(updated);
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "อัปเดต Auto-Retrain ไม่สำเร็จ");
     }
   };
 
@@ -287,11 +337,35 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
                 disabled={trainingMl}
                 onClick={handleTrainMl}
                 className="flex items-center gap-1.5 rounded border border-[#3c3c3c] bg-[#313131] px-2.5 py-1.5 text-xs font-medium text-[#c586c0] hover:bg-[#3c3c3c] disabled:opacity-50"
-                title={`เทรนโมเดล LightGBM ใหม่จากแท่งเทียน MT5 ${trainBars} แท่ง`}
+                title={`เทรน ML v2.0 5-Fold Purged Walk-Forward + Champion Guard`}
               >
                 <Brain className="h-3.5 w-3.5" />
-                {trainingMl ? "Training..." : mlStatus?.trained ? "Retrain ML" : "Train ML"}
+                {trainingMl ? "Training v2.0..." : mlStatus?.trained ? "Retrain (Guard)" : "Train ML v2.0"}
               </button>
+              <button
+                type="button"
+                disabled={benchmarkingMl}
+                onClick={handleBenchmarkMl}
+                className="flex items-center gap-1.5 rounded border border-[#dcdcaa]/40 bg-[#dcdcaa]/10 px-2.5 py-1.5 text-xs font-medium text-[#dcdcaa] hover:bg-[#dcdcaa]/20 disabled:opacity-50"
+                title="ทดสอบเปรียบเทียบ OOS จริง 5-Fold ระหว่าง M15, M30, H1 พร้อมหัก Spread จริง"
+              >
+                <FlaskConical className="h-3.5 w-3.5" />
+                {benchmarkingMl ? "Benchmarking..." : "Benchmark M15/M30/H1"}
+              </button>
+              {retrainStatus && (
+                <button
+                  type="button"
+                  onClick={handleToggleAutoRetrain}
+                  className={`rounded border px-2 py-1.5 text-[11px] font-semibold ${
+                    retrainStatus.config.enabled
+                      ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950]"
+                      : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
+                  }`}
+                  title="เปิด/ปิดระบบรีเทรนตัวเองอัตโนมัติทุก 24 ชม. พร้อม Champion vs Challenger Guard"
+                >
+                  Auto-Retrain {retrainStatus.config.interval_hours}h: {retrainStatus.config.enabled ? "ON" : "OFF"}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={scanningWatchlist}
@@ -363,45 +437,53 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
 
               <div className="font-mono-num grid grid-cols-2 gap-2 rounded border border-[#2b2b2b] bg-[#252526] p-2 text-[11px] sm:grid-cols-4">
                 <div>
-                  <span className="text-[#9d9d9d]">ML Conviction: </span>
+                  <span className="text-[#9d9d9d]">True P(Win): </span>
                   <strong className="text-[#4fc1ff]">
-                    {(ml.ml_conviction_pct ?? ml.ml_raw_prob_pct).toFixed(1)}%
+                    {ml.ml_raw_prob_pct.toFixed(1)}%
                   </strong>
                   <div className="text-[10px] text-[#6e6e6e]">
-                    Raw P(Win): {ml.ml_raw_prob_pct.toFixed(1)}%
+                    BE: {(ml.breakeven_prob_pct ?? 37.5).toFixed(1)}% · Edge:{" "}
+                    {(ml.edge_vs_breakeven_pp ?? 0) >= 0 ? "+" : ""}
+                    {(ml.edge_vs_breakeven_pp ?? 0).toFixed(1)}pp
                   </div>
                 </div>
                 <div>
-                  <span className="text-[#9d9d9d]">News Fusion: </span>
+                  <span className="text-[#9d9d9d]">Expected EV: </span>
                   <strong
                     className={
-                      ml.news_adjustment_pct >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                      (ml.expected_value_r ?? 0) > 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
                     }
                   >
-                    {ml.news_adjustment_pct >= 0 ? "+" : ""}
-                    {ml.news_adjustment_pct.toFixed(1)}%
+                    {(ml.expected_value_r ?? 0) >= 0 ? "+" : ""}
+                    {(ml.expected_value_r ?? 0).toFixed(3)}R
                   </strong>
+                  <div className="text-[10px] text-[#6e6e6e]">
+                    ¼-Kelly: {(ml.quarter_kelly_pct ?? 0).toFixed(2)}%
+                  </div>
                 </div>
                 <div>
-                  <span className="text-[#9d9d9d]">MTF Bonus: </span>
-                  <strong
-                    className={ml.mtf_bonus_pct >= 0 ? "text-[#dcdcaa]" : "text-[#f14c4c]"}
-                  >
-                    {ml.mtf_bonus_pct >= 0 ? "+" : ""}
-                    {ml.mtf_bonus_pct.toFixed(1)}%
-                  </strong>
-                </div>
-                <div>
-                  <span className="text-[#9d9d9d]">Setup + 10k Sim: </span>
+                  <span className="text-[#9d9d9d]">OOS Gate: </span>
                   <strong
                     className={
-                      (ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0) >= 0
+                      ml.side_quality_passed ? "text-[#3fb950]" : "text-[#f14c4c]"
+                    }
+                  >
+                    {ml.side_quality_passed ? "VERIFIED PASS" : "LOCKED (FAIL)"}
+                  </strong>
+                  <div className="text-[10px] text-[#6e6e6e]">
+                    B:{ml.buy_quality_passed ? "PASS" : "LOCK"} / S:{ml.sell_quality_passed ? "PASS" : "LOCK"}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[#9d9d9d]">News / MTF / Sim: </span>
+                  <strong
+                    className={
+                      ml.news_adjustment_pct + ml.mtf_bonus_pct + (ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0) >= 0
                         ? "text-[#4ec9b0]"
                         : "text-[#f14c4c]"
                     }
                   >
-                    {(ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0) >= 0 ? "+" : ""}
-                    {((ml.day_trader_bonus_pct ?? 0) + (ml.time_machine_bonus_pct ?? 0)).toFixed(1)}%
+                    {ml.news_adjustment_pct >= 0 ? "+" : ""}{ml.news_adjustment_pct.toFixed(1)}% / {ml.mtf_bonus_pct >= 0 ? "+" : ""}{ml.mtf_bonus_pct.toFixed(1)}%
                   </strong>
                   <div className="text-[10px] text-[#6e6e6e]">
                     Setup {(ml.day_trader_bonus_pct ?? 0) >= 0 ? "+" : ""}
@@ -693,23 +775,119 @@ export function GauntletPanel({ symbol, timeframe, onProposalQueued }: GauntletP
           )}
 
           {oosSummary && (
-            <div className="font-mono-num mt-2 flex flex-wrap items-center justify-between gap-2 rounded border border-[#2b2b2b] bg-[#1e1e1e] px-3 py-2 text-[11px] text-[#9d9d9d]">
-              <span>
-                Walk-Forward Out-of-Sample Proof ({mlStatus?.meta?.bars_used ?? "5,000+"} bars):
-              </span>
-              <span className="text-[#e1e1e1]">
-                AUC B:{oosSummary.auc_buy ?? "-"} / S:{oosSummary.auc_sell ?? "-"} · High-Conf WR B:
-                {oosSummary.win_rate_65_buy_pct ?? "-"}% / S:
-                {oosSummary.win_rate_65_sell_pct ?? "-"}% · Net{" "}
-                <strong
-                  className={
-                    oosSummary.net_r_combined >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
-                  }
+            <div className="font-mono-num mt-2 space-y-1.5 rounded border border-[#2b2b2b] bg-[#1e1e1e] px-3 py-2 text-[11px] text-[#9d9d9d]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  5-Fold Purged Walk-Forward OOS ({mlStatus?.meta?.bars_used ?? "—"} bars ·{" "}
+                  {mlStatus?.meta?.feature_count ?? 59} causal features · Spread $
+                  {(mlStatus?.meta?.spread_cost_price ?? 0).toFixed(2)}):
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      oosSummary.buy_quality_passed
+                        ? "bg-[#3fb950]/15 text-[#3fb950]"
+                        : "bg-[#f14c4c]/15 text-[#f14c4c]"
+                    }`}
+                    title={oosSummary.buy_quality_reason}
+                  >
+                    BUY: {oosSummary.buy_quality_passed ? "OOS PASS" : "LOCKED"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      oosSummary.sell_quality_passed
+                        ? "bg-[#3fb950]/15 text-[#3fb950]"
+                        : "bg-[#f14c4c]/15 text-[#f14c4c]"
+                    }`}
+                    title={oosSummary.sell_quality_reason}
+                  >
+                    SELL: {oosSummary.sell_quality_passed ? "OOS PASS" : "LOCKED"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[#e1e1e1]">
+                <span>
+                  AUC B:{oosSummary.auc_buy ?? "-"} / S:{oosSummary.auc_sell ?? "-"} · PF B:
+                  {oosSummary.pf_buy ?? "-"} / S:{oosSummary.pf_sell ?? "-"} · ECE B:
+                  {oosSummary.ece_buy ?? "-"} / S:{oosSummary.ece_sell ?? "-"}
+                </span>
+                <span>
+                  OOS Net:{" "}
+                  <strong
+                    className={
+                      oosSummary.net_r_combined >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                    }
+                  >
+                    {oosSummary.net_r_combined >= 0 ? "+" : ""}
+                    {oosSummary.net_r_combined}R
+                  </strong>{" "}
+                  (B:{oosSummary.net_r_buy ?? 0}R / S:{oosSummary.net_r_sell ?? 0}R)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {benchmarkRes && (
+            <div className="font-mono-num mt-2 rounded border border-[#dcdcaa]/40 bg-[#1e1e1e] p-3 text-[11px] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-sans text-xs font-semibold text-[#dcdcaa]">
+                  🏆 Multi-TF 5-Fold Purged OOS Benchmark ({benchmarkRes.symbol}) — แนะนำ: {benchmarkRes.recommended_tf}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBenchmarkRes(null)}
+                  className="text-[#9d9d9d] hover:text-white"
                 >
-                  {oosSummary.net_r_combined >= 0 ? "+" : ""}
-                  {oosSummary.net_r_combined}R
-                </strong>
-              </span>
+                  ซ่อน
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-[#2b2b2b] text-[#9d9d9d]">
+                      <th className="py-1 pr-2">TF</th>
+                      <th className="py-1 pr-2">AUC (B/S)</th>
+                      <th className="py-1 pr-2">PF (B/S)</th>
+                      <th className="py-1 pr-2">ECE (B/S)</th>
+                      <th className="py-1 pr-2">OOS Gate</th>
+                      <th className="py-1 text-right">Net R</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#2b2b2b]">
+                    {benchmarkRes.results.map((r) => (
+                      <tr key={r.tf}>
+                        <td className="py-1.5 pr-2 font-bold text-[#e1e1e1]">{r.tf}</td>
+                        <td className="py-1.5 pr-2 text-[#cccccc]">
+                          {r.auc_buy ?? "-"} / {r.auc_sell ?? "-"}
+                        </td>
+                        <td className="py-1.5 pr-2 text-[#cccccc]">
+                          {r.pf_buy ?? "-"} / {r.pf_sell ?? "-"}
+                        </td>
+                        <td className="py-1.5 pr-2 text-[#cccccc]">
+                          {r.ece_buy ?? "-"} / {r.ece_sell ?? "-"}
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <span className={r.buy_quality_passed ? "text-[#3fb950]" : "text-[#f14c4c]"}>
+                            B:{r.buy_quality_passed ? "PASS" : "LOCK"}
+                          </span>{" "}
+                          /{" "}
+                          <span className={r.sell_quality_passed ? "text-[#3fb950]" : "text-[#f14c4c]"}>
+                            S:{r.sell_quality_passed ? "PASS" : "LOCK"}
+                          </span>
+                        </td>
+                        <td
+                          className={`py-1.5 text-right font-bold ${
+                            (r.net_r_combined ?? 0) >= 0 ? "text-[#3fb950]" : "text-[#f14c4c]"
+                          }`}
+                        >
+                          {(r.net_r_combined ?? 0) >= 0 ? "+" : ""}
+                          {r.net_r_combined ?? 0}R
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

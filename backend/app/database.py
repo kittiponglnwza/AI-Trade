@@ -79,6 +79,13 @@ DEFAULT_DISCORD_CONFIG: dict[str, Any] = {
     "notify_position_manager": True,
 }
 
+DEFAULT_ML_RETRAIN_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "interval_hours": 24.0,
+    "timeframe": "",
+    "champion_guard": True,
+}
+
 
 def utc_now_iso() -> str:
     """Return ISO-8601 UTC timestamp string."""
@@ -810,6 +817,38 @@ def set_discord_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[s
             cfg[k] = v
     set_setting("discord_config", cfg, db_path=db_path)
     return cfg
+
+
+def get_ml_retrain_config(db_path: Path = DB_PATH) -> dict[str, Any]:
+    val = get_setting("ml_retrain_config", {}, db_path=db_path)
+    cfg = dict(DEFAULT_ML_RETRAIN_CONFIG)
+    if isinstance(val, dict):
+        cfg.update({k: v for k, v in val.items() if k in DEFAULT_ML_RETRAIN_CONFIG and v is not None})
+    return cfg
+
+
+def set_ml_retrain_config(patch: dict[str, Any], db_path: Path = DB_PATH) -> dict[str, Any]:
+    cfg = get_ml_retrain_config(db_path=db_path)
+    for k, v in patch.items():
+        if k in DEFAULT_ML_RETRAIN_CONFIG and v is not None:
+            cfg[k] = v
+    set_setting("ml_retrain_config", cfg, db_path=db_path)
+    return cfg
+
+
+def get_ml_retrain_history(limit: int = 20, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    val = get_setting("ml_retrain_history", [], db_path=db_path)
+    if isinstance(val, list):
+        return val[:limit]
+    return []
+
+
+def append_ml_retrain_history(entry: dict[str, Any], max_items: int = 50, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    hist = get_ml_retrain_history(limit=max_items, db_path=db_path)
+    hist.insert(0, entry)
+    hist = hist[:max_items]
+    set_setting("ml_retrain_history", hist, db_path=db_path)
+    return hist
 
 
 def get_position_state(ticket: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:

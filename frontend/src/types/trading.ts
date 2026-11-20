@@ -196,13 +196,40 @@ export interface MLFeatureDriver {
   direction: "UP" | "DOWN";
 }
 
+export interface MLOosSummary {
+  auc_buy: number | null;
+  auc_sell: number | null;
+  mean_fold_auc_buy?: number | null;
+  mean_fold_auc_sell?: number | null;
+  brier_buy?: number | null;
+  brier_sell?: number | null;
+  ece_buy?: number | null;
+  ece_sell?: number | null;
+  pf_buy?: number | null;
+  pf_sell?: number | null;
+  win_rate_65_buy_pct: number | null;
+  win_rate_65_sell_pct: number | null;
+  net_r_buy?: number | null;
+  net_r_sell?: number | null;
+  net_r_combined: number;
+  buy_quality_passed?: boolean;
+  sell_quality_passed?: boolean;
+  buy_quality_reason?: string;
+  sell_quality_reason?: string;
+}
+
 export interface MLReport {
+  schema_version?: string;
   model_symbol: string;
   model_tf: string;
   trained_at: string;
   ml_buy_prob_pct: number;
   ml_sell_prob_pct: number;
   ml_raw_prob_pct: number;
+  breakeven_prob_pct?: number;
+  expected_value_r?: number;
+  edge_vs_breakeven_pp?: number;
+  quarter_kelly_pct?: number;
   ml_conviction_pct?: number;
   news_adjustment_pct: number;
   mtf_bonus_pct: number;
@@ -210,32 +237,99 @@ export interface MLReport {
   time_machine_bonus_pct?: number;
   final_confidence_pct: number;
   min_confidence_pct: number;
+  side_quality_passed?: boolean;
+  side_quality_reason?: string;
+  buy_quality_passed?: boolean;
+  sell_quality_passed?: boolean;
+  composite_oos_score?: number | null;
   meets_threshold: boolean;
   top_features: MLFeatureDriver[];
-  oos_summary: {
-    auc_buy: number | null;
-    auc_sell: number | null;
-    win_rate_65_buy_pct: number | null;
-    win_rate_65_sell_pct: number | null;
-    net_r_combined: number;
-  };
+  oos_summary: MLOosSummary;
 }
 
 export interface MLModelStatus {
   trained: boolean;
+  promoted?: boolean;
+  schema_version?: string;
   symbol: string;
   tf: string;
   meta: {
+    schema_version?: string;
     symbol: string;
     tf: string;
     trained_at: string;
     bars_requested: number;
     bars_used: number;
+    feature_count?: number;
+    htf_context?: string[];
+    spread_cost_price?: number;
+    validation_method?: string;
     barrier_rule: string;
+    composite_oos_score?: number;
+    champion_guard?: {
+      promoted: boolean;
+      challenger_score: number;
+      champion_score: number | null;
+      decision_reason: string;
+    };
     buy_metrics: Record<string, unknown>;
     sell_metrics: Record<string, unknown>;
-    oos_summary: MLReport["oos_summary"];
+    oos_summary: MLOosSummary;
   } | null;
+}
+
+export interface MLRetrainStatus {
+  running: boolean;
+  running_now: boolean;
+  last_run_at: string | null;
+  config: {
+    enabled: boolean;
+    interval_hours: number;
+    timeframe: string;
+    champion_guard: boolean;
+  };
+  history: Array<{
+    timestamp: string;
+    symbol: string;
+    tf: string;
+    promoted: boolean;
+    challenger_score?: number | null;
+    champion_score?: number | null;
+    decision_reason?: string;
+    auc_buy?: number | null;
+    auc_sell?: number | null;
+    net_r_combined?: number | null;
+    buy_quality_passed?: boolean;
+    sell_quality_passed?: boolean;
+    error?: string;
+  }>;
+}
+
+export interface MLBenchmarkResult {
+  symbol: string;
+  recommended_tf: string | null;
+  recommended_reason: string;
+  evaluated_at: string;
+  results: Array<{
+    tf: string;
+    symbol?: string;
+    bars_used?: number;
+    composite_score: number;
+    auc_buy?: number | null;
+    auc_sell?: number | null;
+    pf_buy?: number | null;
+    pf_sell?: number | null;
+    ece_buy?: number | null;
+    ece_sell?: number | null;
+    net_r_buy?: number | null;
+    net_r_sell?: number | null;
+    net_r_combined?: number | null;
+    buy_quality_passed?: boolean;
+    sell_quality_passed?: boolean;
+    promoted?: boolean;
+    decision_reason?: string;
+    error?: string;
+  }>;
 }
 
 export interface GauntletGate {

@@ -244,13 +244,19 @@ class MarketWatchdog:
                             last_prop_ts = self._last_proposed_at.get(resolved, 0.0)
                             if (time.monotonic() - last_prop_ts) >= cooldown_sec:
                                 po = res["proposed_order"]
+                                oos_side_ok = bool(ml_info.get("side_quality_passed", False))
+                                ev_ok = float(ml_info.get("expected_value_r") or 0.0) > 0.0
                                 should_auto_accept = (
                                     auto_accept_proposals
+                                    and oos_side_ok
+                                    and ev_ok
                                     and len(open_symbols) < autopilot_max_open
                                 )
                                 should_autopilot = (
                                     not should_auto_accept
                                     and autopilot_enabled
+                                    and oos_side_ok
+                                    and ev_ok
                                     and conf_pct is not None
                                     and float(conf_pct) >= autopilot_min_conf
                                     and len(open_symbols) < autopilot_max_open
@@ -405,6 +411,16 @@ class MarketWatchdog:
                 return {"executed": False, "reason": "max_open_positions", "proposal": fresh}
 
             gauntlet = fresh.get("gauntlet") or {}
+            ml_block = gauntlet.get("ml") or {}
+            if ml_block and ml_block.get("side_quality_passed") is False:
+                add_system_log(
+                    "WARN",
+                    "OOS_GUARD",
+                    f"Auto-Accept blocked #{pid}: โมเดลฝั่ง {fresh['side']} ยังสอบไม่ผ่านเกณฑ์ OOS ({ml_block.get('side_quality_reason', 'OOS fail')})",
+                    symbol=fresh["symbol"],
+                )
+                return {"executed": False, "reason": "oos_quality_gate_failed", "proposal": fresh}
+
             conf_pct = gauntlet.get("confidence_pct")
             tf = str(fresh.get("timeframe") or "M15").upper()
             exec_res = await self._execute_autopilot_demo(

@@ -133,5 +133,23 @@ class SheetsConfigRequest(BaseModel):
 
 class MLTrainRequest(BaseModel):
     symbol: str = Field(default="XAUUSD")
-    tf: str = Field(default="M15")
-    bars: int = Field(default=10000, ge=1000, le=12000)
+    tf: str = Field(default="M30")
+    bars: int = Field(default=8000, ge=1500, le=12000)
+    tp_atr: float = Field(default=2.5, ge=0.5, le=10.0)
+    sl_atr: float = Field(default=1.5, ge=0.4, le=6.0)
+    champion_guard: bool = Field(default=True)
+    force_promote: bool = Field(default=False)
+
+
+class MLRetrainConfigPatchRequest(BaseModel):
+    enabled: bool | None = None
+    interval_hours: float | None = Field(default=None, ge=1.0, le=336.0)
+    timeframe: str | None = None
+    champion_guard: bool | None = None
+
+
+class MLBenchmarkRequest(BaseModel):
+    symbol: str = Field(default="XAUUSD")
+    timeframes: list[str] = Field(default_factory=lambda: ["M15", "M30", "H1"])
+    tp_atr: float = Field(default=2.5, ge=0.5, le=10.0)
+    sl_atr: float = Field(default=1.5, ge=0.4, le=6.0)

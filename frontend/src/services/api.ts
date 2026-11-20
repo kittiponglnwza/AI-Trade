@@ -4,7 +4,9 @@ import type {
   CandlesResponse,
   DiscordConfig,
   GauntletEvaluation,
+  MLBenchmarkResult,
   MLModelStatus,
+  MLRetrainStatus,
   MarketSnapshot,
   NewsResponse,
   OrderCheckResult,
@@ -358,12 +360,69 @@ export function fetchWatchlistScanner(tf: Timeframe) {
   );
 }
 
-export function trainMlModel(symbol: string, tf: Timeframe, bars = 10000) {
+export function trainMlModel(
+  symbol: string,
+  tf: Timeframe,
+  bars = 8000,
+  tpAtr = 2.5,
+  slAtr = 1.5,
+  championGuard = true
+) {
   return requestJson<MLModelStatus>(
     "/api/ml/train",
     {
       method: "POST",
-      body: JSON.stringify({ symbol, tf, bars }),
+      body: JSON.stringify({
+        symbol,
+        tf,
+        bars,
+        tp_atr: tpAtr,
+        sl_atr: slAtr,
+        champion_guard: championGuard,
+      }),
+    },
+    true
+  );
+}
+
+export function fetchMlRetrainStatus() {
+  return requestJson<MLRetrainStatus>("/api/ml/retrain/status");
+}
+
+export function updateMlRetrainConfig(patch: Partial<MLRetrainStatus["config"]>) {
+  return requestJson<MLRetrainStatus>(
+    "/api/ml/retrain/config",
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    },
+    true
+  );
+}
+
+export function triggerMlRetrainNow(symbol?: string, tf?: string) {
+  const sp = new URLSearchParams();
+  if (symbol) sp.set("symbol", symbol);
+  if (tf) sp.set("tf", tf);
+  const qs = sp.toString() ? `?${sp.toString()}` : "";
+  return requestJson<{ run: Record<string, unknown>; status: MLRetrainStatus }>(
+    `/api/ml/retrain/run${qs}`,
+    { method: "POST" },
+    true
+  );
+}
+
+export function runMlBenchmark(
+  symbol: string,
+  timeframes: string[] = ["M15", "M30", "H1"],
+  tpAtr = 2.5,
+  slAtr = 1.5
+) {
+  return requestJson<MLBenchmarkResult>(
+    "/api/ml/benchmark",
+    {
+      method: "POST",
+      body: JSON.stringify({ symbol, timeframes, tp_atr: tpAtr, sl_atr: slAtr }),
     },
     true
   );

@@ -327,7 +327,7 @@ def evaluate_gauntlet(
         }
     )
 
-    # G9: LightGBM + Live News + Day-Trader Setup & Time Machine Confidence Gate (>= min_confidence_pct)
+    # G9: Institutional LightGBM + Honest +EV + OOS Quality Gate (>= min_confidence_pct)
     ml_report: dict[str, Any] | None = None
     try:
         ml_report = predict_with_news(
@@ -338,29 +338,70 @@ def evaluate_gauntlet(
             mtf,
             min_confidence_pct=min_confidence_pct,
             auto_train=True,
+            sl_atr_mult=sl_atr_mult,
+            tp_atr_mult=tp_atr_mult,
         )
         dt_bonus = float(day_trader.get("setup_score_bonus_pct") or 0.0)
         tm_bonus = float(time_machine.get("tm_confidence_bonus_pct") or 0.0) if time_machine else 0.0
-        combined_conf = round(
-            min(99.0, max(1.0, float(ml_report["final_confidence_pct"]) + dt_bonus + tm_bonus)),
-            2,
-        )
+        ev_r = float(ml_report.get("expected_value_r") or 0.0)
+        side_q_pass = bool(ml_report.get("side_quality_passed", False))
+        side_q_reason = str(ml_report.get("side_quality_reason") or "OOS check failed")
+        true_p = float(ml_report.get("ml_raw_prob_pct") or 0.0)
+        be_p = float(ml_report.get("breakeven_prob_pct") or 42.9)
+
+        # Strict honesty: if true ML EV <= 0, bonuses CANNOT inflate score past 49.5%
+        if ev_r <= 0.0:
+            combined_conf = round(
+                min(49.5, max(1.0, float(ml_report["final_confidence_pct"]) + min(0.0, dt_bonus + tm_bonus))),
+                2,
+            )
+        else:
+            combined_conf = round(
+                min(95.0, max(1.0, float(ml_report["final_confidence_pct"]) + dt_bonus + tm_bonus)),
+                2,
+            )
+
         ml_report["day_trader_bonus_pct"] = round(dt_bonus, 2)
         ml_report["time_machine_bonus_pct"] = round(tm_bonus, 2)
         ml_report["final_confidence_pct"] = combined_conf
-        ml_report["meets_threshold"] = bool(direction in ("BUY", "SELL") and combined_conf >= min_confidence_pct)
+        ml_report["meets_threshold"] = bool(
+            direction in ("BUY", "SELL")
+            and side_q_pass
+            and ev_r > 0.0
+            and combined_conf >= min_confidence_pct
+        )
 
         conf = combined_conf
-        if ml_report["meets_threshold"]:
+        if not side_q_pass:
+            g9_status = "FAIL"
+            g9_metric = f"OOS LOCKED ({direction})"
+            g9_detail = (
+                f"🔒 OOS Quality Gate BLOCKED {direction}: โมเดลฝั่ง {direction} ({tf_u}) ยังสอบไม่ผ่านเกณฑ์ OOS "
+                f"({side_q_reason}) · True P(Win) {true_p:.1f}% vs BE {be_p:.1f}% (EV {ev_r:+.3f}R)."
+            )
+        elif ev_r <= 0.0:
+            g9_status = "FAIL"
+            g9_metric = f"EV {ev_r:+.2f}R (P {true_p:.1f}%)"
+            g9_detail = (
+                f"Negative EV blocked: True Calibrated P(Win) {true_p:.1f}% <= Breakeven {be_p:.1f}% "
+                f"(EV {ev_r:+.3f}R, Edge Score {conf:.1f}%)."
+            )
+        elif ml_report["meets_threshold"]:
             g9_status = "PASS"
+            g9_metric = f"EV {ev_r:+.2f}R · {conf:.1f}%"
+            g9_detail = (
+                f"OOS PASS · True P(Win) {true_p:.1f}% vs BE {be_p:.1f}% (EV {ev_r:+.3f}R) · "
+                f"Edge Score {conf:.1f}% >= {min_confidence_pct:.0f}% "
+                f"(ML {ml_report['ml_conviction_pct']:.1f}% + News {ml_report['news_adjustment_pct']:+.1f}% "
+                f"+ MTF {ml_report['mtf_bonus_pct']:+.1f}% + Setup {dt_bonus:+.1f}% + TM {tm_bonus:+.1f}%)."
+            )
         else:
             g9_status = "FAIL"
-        g9_metric = f"{conf:.1f}% / {min_confidence_pct:.0f}%"
-        g9_detail = (
-            f"Combined {conf:.1f}% vs >= {min_confidence_pct:.0f}% gate "
-            f"(ML {ml_report['ml_conviction_pct']:.1f}% + News {ml_report['news_adjustment_pct']:+.1f}% "
-            f"+ MTF {ml_report['mtf_bonus_pct']:+.1f}% + Setup {dt_bonus:+.1f}% + TimeMachine {tm_bonus:+.1f}%)."
-        )
+            g9_metric = f"EV {ev_r:+.2f}R · {conf:.1f}%/{min_confidence_pct:.0f}%"
+            g9_detail = (
+                f"Edge Score {conf:.1f}% < {min_confidence_pct:.0f}% gate "
+                f"(True P(Win) {true_p:.1f}% vs BE {be_p:.1f}%, EV {ev_r:+.3f}R)."
+            )
     except Exception as exc:
         g9_status = "FAIL"
         g9_metric = "Model Error"
