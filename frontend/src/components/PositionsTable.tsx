@@ -258,12 +258,13 @@ export function PositionsTable({
 
   return (
     <div className="rounded-md border border-[#2b2b2b] bg-[#252526]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] px-3 py-1.5">
+      {/* Row 1: Primary Tabs + Emergency Panic Kill-Switch */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] px-3 pt-1">
         <div className="flex flex-wrap items-center gap-1">
           <button
             type="button"
             onClick={() => setSubTab("positions")}
-            className={`border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+            className={`border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
               subTab === "positions"
                 ? "border-[#007acc] text-[#e1e1e1]"
                 : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
@@ -274,7 +275,7 @@ export function PositionsTable({
           <button
             type="button"
             onClick={() => setSubTab("orders")}
-            className={`border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+            className={`border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
               subTab === "orders"
                 ? "border-[#007acc] text-[#e1e1e1]"
                 : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
@@ -285,7 +286,7 @@ export function PositionsTable({
           <button
             type="button"
             onClick={() => setSubTab("history")}
-            className={`flex items-center gap-1 border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+            className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
               subTab === "history"
                 ? "border-[#007acc] text-[#e1e1e1]"
                 : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
@@ -296,92 +297,97 @@ export function PositionsTable({
           </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-          {pmCfg && (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => handleTogglePmFlag({ enabled: !pmCfg.enabled })}
-                className={`flex items-center gap-1 rounded border px-2 py-0.5 font-semibold ${
-                  pmCfg.enabled
-                    ? "border-[#4ec9b0]/50 bg-[#4ec9b0]/15 text-[#4ec9b0]"
-                    : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
-                }`}
-              >
-                <ShieldCheck className="h-3 w-3" />
-                Auto-Guard: {pmCfg.enabled ? "ON" : "OFF"}
-              </button>
-
-              <button
-                type="button"
-                disabled={busy || !pmCfg.enabled}
-                onClick={() => handleTogglePmFlag({ auto_breakeven: !pmCfg.auto_breakeven })}
-                className={`rounded border px-2 py-0.5 ${
-                  pmCfg.enabled && pmCfg.auto_breakeven
-                    ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950]"
-                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-                }`}
-              >
-                Auto-BE (+{pmCfg.be_trigger_r}R)
-              </button>
-
-              <button
-                type="button"
-                disabled={busy || !pmCfg.enabled}
-                onClick={() => handleTogglePmFlag({ auto_partial_tp: !pmCfg.auto_partial_tp })}
-                className={`rounded border px-2 py-0.5 ${
-                  pmCfg.enabled && pmCfg.auto_partial_tp
-                    ? "border-[#007acc]/50 bg-[#007acc]/15 text-[#4fc1ff]"
-                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-                }`}
-              >
-                Partial {pmCfg.partial_close_pct}% (+{pmCfg.partial_trigger_r}R)
-              </button>
-
-              <button
-                type="button"
-                disabled={busy || !pmCfg.enabled}
-                onClick={() => handleTogglePmFlag({ auto_trailing_sl: !pmCfg.auto_trailing_sl })}
-                className={`rounded border px-2 py-0.5 ${
-                  pmCfg.enabled && pmCfg.auto_trailing_sl
-                    ? "border-[#c586c0]/50 bg-[#c586c0]/15 text-[#e5a6e0]"
-                    : "border-[#3c3c3c] bg-[#1e1e1e] text-[#6e6e6e]"
-                }`}
-              >
-                Trail SL (+{pmCfg.trail_start_r}R)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowPmTuning((v) => !v)}
-                className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
-                  showPmTuning
-                    ? "border-[#007acc] bg-[#007acc]/20 text-white"
-                    : "border-[#3c3c3c] bg-[#313131] text-[#cccccc] hover:bg-[#3c3c3c]"
-                }`}
-                title="ปรับตัวเลข +R และ % ของระบบ Auto-Guard"
-              >
-                <Sliders className="h-3 w-3 text-[#dcdcaa]" />
-                <span>ตั้งค่า Guard</span>
-              </button>
-            </>
-          )}
-
-          {(positions.length > 0 || orders.length > 0) && (
+        {(positions.length > 0 || orders.length > 0) && (
+          <div className="pb-1">
             <button
               type="button"
               disabled={busy}
               onClick={() => setShowPanicModal(true)}
-              className="flex items-center gap-1 rounded border border-[#f14c4c] bg-[#c72e2e] px-2.5 py-0.5 font-bold text-white hover:bg-[#f14c4c]"
-              title="ปิดทุกไม้ที่เปิดอยู่ + ยกเลิก Pending ทั้งหมด + หยุด Auto-Pilot ทันที"
+              className="flex items-center gap-1.5 rounded border border-[#f14c4c] bg-[#c72e2e] px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-[#f14c4c] disabled:opacity-50"
+              title="ปิดทุกไม้ที่เปิดอยู่ + ยกเลิก Pending ทั้งหมด + หยุด Auto-Accept / Auto-Pilot ทันที"
             >
-              <AlertOctagon className="h-3 w-3" />
+              <AlertOctagon className="h-3.5 w-3.5" />
               PANIC CLOSE ALL
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* Row 2: Dedicated Smart Position Guard Control Strip */}
+      {pmCfg && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] bg-[#1f1f20] px-3 py-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleTogglePmFlag({ enabled: !pmCfg.enabled })}
+              className={`flex items-center gap-1.5 rounded border px-2.5 py-1 font-semibold transition ${
+                pmCfg.enabled
+                  ? "border-[#4ec9b0]/50 bg-[#4ec9b0]/15 text-[#4ec9b0] hover:bg-[#4ec9b0]/25"
+                  : "border-[#3c3c3c] bg-[#2a2a2b] text-[#9d9d9d] hover:bg-[#333334]"
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Auto-Guard: {pmCfg.enabled ? "ON" : "OFF"}
+            </button>
+
+            <div className="hidden h-4 w-px bg-[#333333] sm:block" />
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_breakeven: !pmCfg.auto_breakeven })}
+              className={`rounded border px-2.5 py-1 font-medium transition ${
+                pmCfg.enabled && pmCfg.auto_breakeven
+                  ? "border-[#3fb950]/40 bg-[#3fb950]/15 text-[#3fb950] hover:bg-[#3fb950]/25"
+                  : "border-[#333333] bg-[#181818] text-[#6e6e6e]"
+              }`}
+            >
+              Auto-BE (+{pmCfg.be_trigger_r}R)
+            </button>
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_partial_tp: !pmCfg.auto_partial_tp })}
+              className={`rounded border px-2.5 py-1 font-medium transition ${
+                pmCfg.enabled && pmCfg.auto_partial_tp
+                  ? "border-[#007acc]/50 bg-[#007acc]/15 text-[#4fc1ff] hover:bg-[#007acc]/25"
+                  : "border-[#333333] bg-[#181818] text-[#6e6e6e]"
+              }`}
+            >
+              Partial {pmCfg.partial_close_pct}% (+{pmCfg.partial_trigger_r}R)
+            </button>
+
+            <button
+              type="button"
+              disabled={busy || !pmCfg.enabled}
+              onClick={() => handleTogglePmFlag({ auto_trailing_sl: !pmCfg.auto_trailing_sl })}
+              className={`rounded border px-2.5 py-1 font-medium transition ${
+                pmCfg.enabled && pmCfg.auto_trailing_sl
+                  ? "border-[#c586c0]/50 bg-[#c586c0]/15 text-[#e5a6e0] hover:bg-[#c586c0]/25"
+                  : "border-[#333333] bg-[#181818] text-[#6e6e6e]"
+              }`}
+            >
+              Trail SL (+{pmCfg.trail_start_r}R)
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowPmTuning((v) => !v)}
+            className={`flex items-center gap-1.5 rounded border px-2.5 py-1 font-medium transition ${
+              showPmTuning
+                ? "border-[#007acc] bg-[#007acc]/20 text-white"
+                : "border-[#3c3c3c] bg-[#2a2a2b] text-[#cccccc] hover:bg-[#353536]"
+            }`}
+            title="ปรับตัวเลข +R และ % ของระบบ Auto-Guard"
+          >
+            <Sliders className="h-3.5 w-3.5 text-[#dcdcaa]" />
+            <span>ตั้งค่า Guard</span>
+          </button>
+        </div>
+      )}
 
       {showPmTuning && (
         <div className="border-b border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs space-y-2.5">
