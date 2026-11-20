@@ -7,7 +7,6 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
-  Zap,
 } from "lucide-react";
 import type { AccountSummary, AppTab, QuoteInfo, WsStatus } from "../types/trading";
 
@@ -15,9 +14,6 @@ interface HeaderBarProps {
   wsStatus: WsStatus;
   mt5Connected: boolean;
   watchdogRunning: boolean;
-  autoAcceptEnabled: boolean;
-  autoAcceptBusy?: boolean;
-  onToggleAutoAccept: (nextEnabled: boolean) => void;
   account: AccountSummary | null;
   quote: QuoteInfo | null;
   activeTab: AppTab;
@@ -30,9 +26,6 @@ export function HeaderBar({
   wsStatus,
   mt5Connected,
   watchdogRunning,
-  autoAcceptEnabled,
-  autoAcceptBusy = false,
-  onToggleAutoAccept,
   account,
   quote,
   activeTab,
@@ -149,7 +142,7 @@ export function HeaderBar({
         )}
 
         <div className="flex flex-wrap items-center gap-2">
-          <nav className="flex flex-wrap items-center border-b border-transparent bg-[#181818]">
+          <nav className="flex items-center border-b border-transparent bg-[#181818]">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const active = activeTab === tab.id;
@@ -175,25 +168,6 @@ export function HeaderBar({
               );
             })}
           </nav>
-
-          <button
-            type="button"
-            disabled={autoAcceptBusy}
-            onClick={() => onToggleAutoAccept(!autoAcceptEnabled)}
-            className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-[11px] font-semibold transition disabled:opacity-50 ${
-              autoAcceptEnabled
-                ? "border-[#3fb950]/60 bg-[#3fb950]/15 text-[#3fb950] hover:bg-[#3fb950]/25"
-                : "border-[#3c3c3c] bg-[#252526] text-[#9d9d9d] hover:bg-[#313131] hover:text-[#e1e1e1]"
-            }`}
-            title={
-              autoAcceptEnabled
-                ? "โหมดยอมรับ Auto เปิดอยู่ — คลิกเพื่อปิด"
-                : "คลิกเพื่อเปิดโหมดยอมรับ Auto ตอน AI แจ้งเตือน"
-            }
-          >
-            <Zap className="h-3.5 w-3.5" />
-            <span>Auto-Accept: {autoAcceptEnabled ? "ON" : "OFF"}</span>
-          </button>
 
           {account && (
             <div

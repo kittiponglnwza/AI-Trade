@@ -405,7 +405,6 @@ export default function App() {
   }
 
   const pendingProposalsCount = proposals.filter((p) => p.status === "PENDING").length;
-  const autoAcceptEnabled = Boolean(watchdogStatus?.config?.auto_accept_proposals);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#181818] text-[#cccccc]">
@@ -413,9 +412,6 @@ export default function App() {
         wsStatus={wsStatus}
         mt5Connected={mt5Connected}
         watchdogRunning={watchdogRunning}
-        autoAcceptEnabled={autoAcceptEnabled}
-        autoAcceptBusy={autoAcceptBusy}
-        onToggleAutoAccept={handleToggleAutoAccept}
         account={account}
         quote={quote}
         activeTab={activeTab}
