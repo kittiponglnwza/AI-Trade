@@ -1007,13 +1007,30 @@ class MT5BridgeService:
             equity = float(acc.equity) if acc.equity > 0 else float(acc.balance or 1.0)
             floating_pnl = float(acc.profit)
 
-            # Calculate today's realized closed PnL
+            # Calculate today's realized closed PnL (resetting baseline if account balance was manually reset today)
             now_utc = datetime.now(timezone.utc)
             start_of_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
             deals = mt5.history_deals_get(start_of_day, now_utc + timedelta(hours=6)) or []
+            deals_sorted = sorted(deals, key=lambda item: (int(item.time), int(item.ticket)))
+
+            # If a Demo balance reset/top-up (DEAL_TYPE_BALANCE) occurred after earlier losses today,
+            # measure daily drawdown cleanly from after the latest balance reset.
+            last_balance_reset_key = (-1, -1)
+            for d in deals_sorted:
+                if d.type == mt5.DEAL_TYPE_BALANCE:
+                    comment_l = str(getattr(d, "comment", "") or "").lower()
+                    if "custombalance" in comment_l or "deposit" in comment_l or float(d.profit) > 0:
+                        last_balance_reset_key = (int(d.time), int(d.ticket))
+
             daily_realized = 0.0
-            for d in deals:
-                if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY, mt5.DEAL_ENTRY_INOUT):
+            for d in deals_sorted:
+                if (int(d.time), int(d.ticket)) <= last_balance_reset_key:
+                    continue
+                if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL) and d.entry in (
+                    mt5.DEAL_ENTRY_OUT,
+                    mt5.DEAL_ENTRY_OUT_BY,
+                    mt5.DEAL_ENTRY_INOUT,
+                ):
                     daily_realized += float(d.profit) + float(d.commission) + float(d.swap)
 
             daily_total_pnl = round(daily_realized + floating_pnl, 2)
