@@ -16,6 +16,12 @@ from app.database import (
     list_system_logs,
     list_trade_logs,
 )
+from app.supabase_sync import (
+    sync_proposals_to_supabase,
+    sync_settings_to_supabase,
+    sync_system_logs_to_supabase,
+    sync_trades_to_supabase,
+)
 
 TRADE_COLUMNS = [
     "id",
@@ -144,6 +150,10 @@ def sync_trade_rows(trades: list[dict[str, Any]]) -> None:
     if not trades:
         return
     try:
+        sync_trades_to_supabase(trades)
+    except Exception:
+        pass
+    try:
         res = _dispatch("Trades", [_trade_to_row(t) for t in trades], action="append")
         if not res.get("skipped"):
             add_system_log("INFO", "SHEETS", f"Appended {len(trades)} trade(s) to Google Sheets")
@@ -152,6 +162,10 @@ def sync_trade_rows(trades: list[dict[str, Any]]) -> None:
 
 
 def sync_proposal_row(proposal: dict[str, Any]) -> None:
+    try:
+        sync_proposals_to_supabase([proposal])
+    except Exception:
+        pass
     try:
         res = _dispatch("Proposals", [_proposal_to_row(proposal)], action="append")
         if not res.get("skipped"):
@@ -166,6 +180,10 @@ def sync_proposal_row(proposal: dict[str, Any]) -> None:
 
 
 def sync_watchdog_log_row(log_entry: dict[str, Any]) -> None:
+    try:
+        sync_system_logs_to_supabase([log_entry])
+    except Exception:
+        pass
     try:
         row = [
             log_entry.get("id", ""),
@@ -182,6 +200,10 @@ def sync_watchdog_log_row(log_entry: dict[str, Any]) -> None:
 
 
 def sync_stats_snapshot(stats: dict[str, Any]) -> None:
+    try:
+        sync_settings_to_supabase(stats=stats)
+    except Exception:
+        pass
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         row = [

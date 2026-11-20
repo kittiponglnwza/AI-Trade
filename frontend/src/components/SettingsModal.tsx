@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, CheckCircle2, Copy, FileSpreadsheet, Plug, RefreshCw, Send, X, XCircle } from "lucide-react";
+import { Bell, CheckCircle2, Cloud, Copy, FileSpreadsheet, KeyRound, LogOut, Plug, RefreshCw, Send, X, XCircle } from "lucide-react";
 import {
   fetchDiscordConfig,
   fetchHealth,
@@ -9,14 +9,23 @@ import {
   saveDiscordConfig,
   saveSheetsConfig,
   syncAllSheets,
+  syncAllSupabase,
   testDiscordWebhook,
   testSheetsConnection,
 } from "../services/api";
+import {
+  SUPABASE_URL,
+  changeSupabasePassword,
+  discoverBridgeStateFromSupabase,
+  getStoredSupabaseSession,
+  signOutSupabase,
+} from "../services/supabase";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
+  onLoggedOut?: () => void;
 }
 
 const APPS_SCRIPT_SNIPPET = `var HEADERS = {
@@ -53,14 +62,19 @@ function doPost(e) {
   }
 }`;
 
-export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, onSaved, onLoggedOut }: SettingsModalProps) {
   const initial = getBridgeConfig();
-  const [tab, setTab] = useState<"bridge" | "discord" | "sheets">("discord");
+  const [tab, setTab] = useState<"supabase" | "discord" | "bridge" | "sheets">("supabase");
 
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl);
   const [apiKey, setApiKey] = useState(initial.apiKey);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const [sbBusy, setSbBusy] = useState(false);
+  const [sbMsg, setSbMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const currentSession = getStoredSupabaseSession();
 
   const [discordEnabled, setDiscordEnabled] = useState(false);
   const [discordWebhookUrl, setDiscordWebhookUrl] = useState("");
@@ -210,11 +224,102 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
     }
   };
 
+  const handleAutoFetchTunnelFromSupabase = async () => {
+    setSbBusy(true);
+    setSbMsg(null);
+    try {
+      const state = await discoverBridgeStateFromSupabase();
+      if (!state || !state.public_url) {
+        setSbMsg({
+          ok: false,
+          message: "ยังไม่พบลิงก์ Cloudflare Tunnel ใน Supabase (ตรวจสอบว่าเปิด Backend ในคอมแล้ว)",
+        });
+        return;
+      }
+      setBaseUrl(state.public_url);
+      if (state.api_key) setApiKey(state.api_key);
+      saveBridgeConfig({
+        baseUrl: state.public_url,
+        apiKey: state.api_key || apiKey,
+      });
+      setSbMsg({
+        ok: true,
+        message: `ดึงลิงก์ล่าสุดจาก Supabase สำเร็จ: ${state.public_url} (อัปเดตเมื่อ ${new Date(state.updated_at).toLocaleTimeString()})`,
+      });
+      onSaved();
+    } catch (err) {
+      setSbMsg({
+        ok: false,
+        message: err instanceof Error ? err.message : "ดึงลิงก์จาก Supabase ไม่สำเร็จ",
+      });
+    } finally {
+      setSbBusy(false);
+    }
+  };
+
+  const handleSyncAllToSupabase = async () => {
+    setSbBusy(true);
+    setSbMsg(null);
+    try {
+      const res = await syncAllSupabase();
+      setSbMsg({
+        ok: true,
+        message: `ซิงก์ข้อมูลทั้งหมดขึ้น Supabase PostgreSQL สำเร็จ (${JSON.stringify(res.written)})`,
+      });
+    } catch (err) {
+      setSbMsg({
+        ok: false,
+        message: err instanceof Error ? err.message : "ซิงก์ขึ้น Supabase ไม่สำเร็จ",
+      });
+    } finally {
+      setSbBusy(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (newPassword.trim().length < 6) {
+      setSbMsg({ ok: false, message: "รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร" });
+      return;
+    }
+    setSbBusy(true);
+    setSbMsg(null);
+    try {
+      await changeSupabasePassword(newPassword.trim());
+      setNewPassword("");
+      setSbMsg({ ok: true, message: "เปลี่ยนรหัสผ่าน Supabase Auth เรียบร้อยแล้ว!" });
+    } catch (err) {
+      setSbMsg({
+        ok: false,
+        message: err instanceof Error ? err.message : "เปลี่ยนรหัสผ่านไม่สำเร็จ",
+      });
+    } finally {
+      setSbBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOutSupabase();
+    onClose();
+    if (onLoggedOut) onLoggedOut();
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
       <div className="w-full max-w-xl rounded-md border border-[#3c3c3c] bg-[#252526] shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#2b2b2b] px-5 py-3">
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setTab("supabase")}
+              className={`flex items-center gap-1.5 border-b-2 pb-1 text-xs font-semibold ${
+                tab === "supabase"
+                  ? "border-[#007acc] text-white"
+                  : "border-transparent text-[#9d9d9d] hover:text-[#e1e1e1]"
+              }`}
+            >
+              <Cloud className="h-3.5 w-3.5 text-[#3fb950]" />
+              Supabase Cloud & Auth
+            </button>
             <button
               type="button"
               onClick={() => setTab("discord")}
@@ -249,7 +354,7 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
               }`}
             >
               <FileSpreadsheet className="h-3.5 w-3.5 text-[#3fb950]" />
-              Google Sheets 24/7
+              Google Sheets
             </button>
           </div>
           <button
@@ -261,7 +366,115 @@ export function SettingsModal({ open, onClose, onSaved }: SettingsModalProps) {
           </button>
         </div>
 
-        {tab === "discord" ? (
+        {tab === "supabase" ? (
+          <div className="p-5 space-y-3.5">
+            <div className="rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-[#3fb950]">
+                  ● Supabase PostgreSQL + Single-Owner RLS Active
+                </span>
+                <span className="rounded bg-[#3fb950]/15 px-2 py-0.5 text-[10px] font-bold text-[#3fb950]">
+                  AI-Trade
+                </span>
+              </div>
+              <div className="text-[#9d9d9d]">
+                Owner Account:{" "}
+                <strong className="text-[#e1e1e1]">
+                  {currentSession?.user?.email ?? "kitipongzaza566@gmail.com"}
+                </strong>
+              </div>
+              <div className="font-mono-num text-[11px] text-[#6e6e6e]">{SUPABASE_URL}</div>
+            </div>
+
+            <div className="rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs space-y-2">
+              <div className="font-semibold text-[#4fc1ff]">
+                🔗 ดึงลิงก์ Cloudflare Tunnel อัตโนมัติ (ไม่ต้องก๊อปวาง)
+              </div>
+              <p className="text-[11px] text-[#9d9d9d]">
+                ทุกครั้งที่เปิดคอมใหม่ สคริปต์หลังบ้านจะส่งลิงก์ Cloudflare Tunnel ล่าสุดขึ้นไปเก็บใน Supabase ให้เอง และหน้าเว็บจะดึงมาเชื่อมให้อัตโนมัติเมื่อ Login
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={sbBusy}
+                  onClick={handleAutoFetchTunnelFromSupabase}
+                  className="flex items-center gap-1.5 rounded bg-[#007acc] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1f8ad2] disabled:opacity-50"
+                >
+                  <Plug className="h-3.5 w-3.5" />
+                  ดึงลิงก์ Tunnel ล่าสุดจาก Supabase เดี๋ยวนี้
+                </button>
+                <button
+                  type="button"
+                  disabled={sbBusy}
+                  onClick={handleSyncAllToSupabase}
+                  className="flex items-center gap-1.5 rounded bg-[#238636] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2ea043] disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${sbBusy ? "animate-spin" : ""}`} />
+                  Sync All to Supabase Now
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded border border-[#2b2b2b] bg-[#1e1e1e] p-3 text-xs space-y-2">
+              <div className="flex items-center gap-1.5 font-semibold text-[#e1e1e1]">
+                <KeyRound className="h-3.5 w-3.5 text-[#dcdcaa]" />
+                <span>เปลี่ยนรหัสผ่าน Login (Change Password)</span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)"
+                  className="flex-1 rounded border border-[#3c3c3c] bg-[#141414] px-3 py-1.5 text-xs text-white placeholder-[#6e6e6e] focus:border-[#007acc] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={sbBusy || !newPassword.trim()}
+                  onClick={handleChangePassword}
+                  className="rounded border border-[#3c3c3c] bg-[#313131] px-3 py-1.5 text-xs font-semibold text-[#e1e1e1] hover:bg-[#3c3c3c] disabled:opacity-50"
+                >
+                  อัปเดตรหัสผ่าน
+                </button>
+              </div>
+            </div>
+
+            {sbMsg && (
+              <div
+                className={`flex items-start gap-2 rounded border p-3 text-xs break-words ${
+                  sbMsg.ok
+                    ? "border-[#3fb950]/40 bg-[#1e3a29]/40 text-[#3fb950]"
+                    : "border-[#f14c4c]/40 bg-[#5a1d1d]/40 text-[#f48771]"
+                }`}
+              >
+                {sbMsg.ok ? (
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                ) : (
+                  <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                )}
+                <span>{sbMsg.message}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between border-t border-[#2b2b2b] pt-3">
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 rounded border border-[#f14c4c]/40 bg-[#5a1d1d]/30 px-3 py-1.5 text-xs font-semibold text-[#f48771] hover:bg-[#5a1d1d]/60"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                ออกจากระบบ (Logout)
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded border border-[#3c3c3c] bg-[#313131] px-4 py-1.5 text-xs font-medium text-[#cccccc] hover:bg-[#3c3c3c]"
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
+          </div>
+        ) : tab === "discord" ? (
           <div className="p-5 space-y-3.5">
             <label className="flex cursor-pointer items-center justify-between rounded border border-[#2b2b2b] bg-[#1e1e1e] px-3 py-2 text-xs">
               <span className="font-medium text-[#e1e1e1]">

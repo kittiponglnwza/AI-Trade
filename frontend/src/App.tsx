@@ -4,6 +4,7 @@ import { AccountKpiStrip } from "./components/AccountKpiStrip";
 import { GauntletPanel } from "./components/GauntletPanel";
 import { HeaderBar } from "./components/HeaderBar";
 import { LiveChartPanel } from "./components/LiveChartPanel";
+import { LoginGate } from "./components/LoginGate";
 import { OrderTicketPanel } from "./components/OrderTicketPanel";
 import { PositionsTable } from "./components/PositionsTable";
 import { ProposalsQueue } from "./components/ProposalsQueue";
@@ -22,7 +23,15 @@ import {
   fetchSystemLogs,
   fetchWatchdogStatus,
   fetchWatchlist,
+  getBridgeConfig,
+  saveBridgeConfig,
 } from "./services/api";
+import {
+  discoverBridgeStateFromSupabase,
+  fetchSupabaseCloudFallback,
+  getStoredSupabaseSession,
+  type SupabaseSession,
+} from "./services/supabase";
 import type {
   AccountSummary,
   AppTab,
@@ -45,6 +54,9 @@ import type {
 } from "./types/trading";
 
 export default function App() {
+  const [authSession, setAuthSession] = useState<SupabaseSession | null>(() =>
+    getStoredSupabaseSession()
+  );
   const [symbol, setSymbol] = useState("XAUUSD");
   const [timeframe, setTimeframe] = useState<Timeframe>("M15");
   const [activeTab, setActiveTab] = useState<AppTab>("desk");
@@ -147,9 +159,38 @@ export default function App() {
       }
 
       if (!anyBridgeOk) {
-        setBridgeError(
-          "ยังไม่สามารถเชื่อม MT5 Bridge ได้ — กด Settings มุมขวาบนเพื่อใส่ Bridge URL และ API Key"
-        );
+        // Attempt auto-discovery of the latest Cloudflare Tunnel URL from Supabase
+        const sbBridge = await discoverBridgeStateFromSupabase();
+        const curCfg = getBridgeConfig();
+        const cleanDiscovered = (sbBridge?.public_url || "").trim().replace(/\/+$/, "");
+        if (cleanDiscovered && cleanDiscovered !== curCfg.baseUrl) {
+          saveBridgeConfig({
+            baseUrl: cleanDiscovered,
+            apiKey: sbBridge?.api_key || curCfg.apiKey,
+          });
+          setReconnectSeed((s) => s + 1);
+          return;
+        }
+
+        // Load persistent trading data from Supabase Cloud 24/7 fallback
+        const cloud = await fetchSupabaseCloudFallback();
+        if (cloud) {
+          if (cloud.bridgeState?.account_json) {
+            setAccount(cloud.bridgeState.account_json);
+          }
+          if (cloud.proposals.length > 0) setProposals(cloud.proposals);
+          if (cloud.logs.length > 0) setLogs(cloud.logs);
+          if (cloud.systemLogs.length > 0) setSystemLogs(cloud.systemLogs);
+          if (cloud.watchlist.length > 0) setWatchlistSymbols(cloud.watchlist);
+          if (cloud.stats) setStats(cloud.stats);
+          setBridgeError(
+            "☁️ โหมดดูข้อมูลผ่าน Supabase Cloud 24/7 (หากเปิดคอมแล้ว ระบบจะดึงลิงก์ Cloudflare Tunnel ล่าสุดมาเชื่อม MT5 ให้อัตโนมัติ)"
+          );
+        } else {
+          setBridgeError(
+            "ยังไม่สามารถเชื่อม MT5 Bridge ได้ — กด Settings มุมขวาบนเพื่อดึงลิงก์จาก Supabase"
+          );
+        }
       } else {
         setBridgeError(null);
       }
@@ -163,8 +204,9 @@ export default function App() {
   }, [loadRestData, symbol, timeframe]);
 
   useEffect(() => {
+    if (!authSession) return;
     loadRestData(symbol, timeframe);
-  }, [loadRestData, symbol, timeframe, reconnectSeed]);
+  }, [authSession, loadRestData, symbol, timeframe, reconnectSeed]);
 
   useEffect(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -173,6 +215,7 @@ export default function App() {
   }, [symbol, timeframe]);
 
   useEffect(() => {
+    if (!authSession) return;
     let closedByEffect = false;
     let reconnectTimer: number | undefined;
 
@@ -252,6 +295,19 @@ export default function App() {
         wsRef.current = null;
         if (closedByEffect) return;
         setWsStatus("OFFLINE");
+        discoverBridgeStateFromSupabase()
+          .then((st) => {
+            if (!st?.public_url || closedByEffect) return;
+            const cur = getBridgeConfig();
+            const cleanUrl = st.public_url.trim().replace(/\/+$/, "");
+            if (cleanUrl && cleanUrl !== cur.baseUrl) {
+              saveBridgeConfig({
+                baseUrl: cleanUrl,
+                apiKey: st.api_key || cur.apiKey,
+              });
+            }
+          })
+          .catch(() => {});
         const delay = retryDelayRef.current;
         retryDelayRef.current = Math.min(retryDelayRef.current * 1.5, 10000);
         reconnectTimer = window.setTimeout(connectWs, delay);
@@ -268,7 +324,18 @@ export default function App() {
         wsRef.current = null;
       }
     };
-  }, [reconnectSeed]);
+  }, [authSession, reconnectSeed]);
+
+  if (!authSession) {
+    return (
+      <LoginGate
+        onAuthenticated={(sess) => {
+          setAuthSession(sess);
+          setReconnectSeed((s) => s + 1);
+        }}
+      />
+    );
+  }
 
   const pendingProposalsCount = proposals.filter((p) => p.status === "PENDING").length;
 
@@ -504,6 +571,7 @@ export default function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onSaved={() => setReconnectSeed((s) => s + 1)}
+        onLoggedOut={() => setAuthSession(null)}
       />
     </div>
   );

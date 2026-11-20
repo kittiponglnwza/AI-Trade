@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from app.analytics import compute_trading_stats
-from app.config import ALLOWED_ORIGINS, API_KEY, DEFAULT_SYMBOL
+from app.config import ALLOWED_ORIGINS, API_KEY, DEFAULT_SYMBOL, SUPABASE_OWNER_EMAIL, SUPABASE_URL
 from app.database import (
     add_system_log,
     create_execution_log,
@@ -80,7 +80,32 @@ from app.sheets_sync import (
     sync_trade_rows,
     test_sheets_connection,
 )
+from app.supabase_sync import (
+    is_supabase_configured,
+    sync_all_to_supabase,
+    sync_bridge_state_to_supabase,
+    sync_settings_to_supabase,
+    verify_supabase_owner_jwt,
+)
 from app.watcher import watchdog
+
+
+async def _initial_supabase_boot_sync() -> None:
+    try:
+        connected = await asyncio.to_thread(mt5_service.is_connected)
+        acc = None
+        bal = None
+        t_mode = None
+        if connected:
+            try:
+                acc = await asyncio.to_thread(mt5_service.get_account_summary)
+                bal = acc.get("balance")
+                t_mode = acc.get("trade_mode")
+            except Exception:
+                pass
+        await asyncio.to_thread(sync_all_to_supabase, bal, connected, t_mode, acc)
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -92,6 +117,7 @@ async def lifespan(_: FastAPI):
         pass
     watchdog.start()
     position_manager.start()
+    asyncio.create_task(_initial_supabase_boot_sync())
     yield
     await position_manager.stop()
     await watchdog.stop()
@@ -114,12 +140,23 @@ app.add_middleware(
 )
 
 
-def verify_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
-    """Require matching X-API-Key using constant-time comparison."""
+def verify_api_key(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> None:
+    """Require either a valid Supabase Owner JWT (Bearer) or matching X-API-Key."""
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer = authorization[7:].strip()
+        if verify_supabase_owner_jwt(bearer):
+            return
+
     expected = (API_KEY or "mt5-local-dev-key").encode("utf-8")
     provided = (x_api_key or "").encode("utf-8")
     if not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header.")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing authentication (Supabase Owner JWT or X-API-Key).",
+        )
 
 
 def _map_mt5_error(exc: Exception) -> HTTPException:
@@ -702,6 +739,7 @@ async def put_watchlist_endpoint(body: WatchlistUpdateRequest) -> dict[str, Any]
     if await asyncio.to_thread(mt5_service.is_connected):
         quotes = await asyncio.to_thread(mt5_service.get_watchlist_quotes, updated)
     add_system_log("INFO", "WATCHLIST", f"Updated watchlist ({len(updated)} symbols): {', '.join(updated)}")
+    asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
     return {"symbols": updated, "quotes": quotes}
 
 
@@ -717,9 +755,10 @@ async def get_news_endpoint(
 async def post_gauntlet_evaluate(
     body: GauntletEvaluateRequest,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict[str, Any]:
     if body.auto_queue:
-        verify_api_key(x_api_key)
+        verify_api_key(x_api_key, authorization)
 
     try:
         result = await asyncio.to_thread(
@@ -850,6 +889,7 @@ async def patch_watchdog_config(body: WatchdogConfigPatchRequest) -> dict[str, A
     patch = body.model_dump(exclude_none=True)
     updated = set_watchdog_config(patch)
     add_system_log("INFO", "WATCHDOG", f"Updated watchdog config: {updated}")
+    asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
     return watchdog.get_status()
 
 
@@ -932,6 +972,7 @@ async def patch_position_manager_config(body: PositionManagerConfigPatchRequest)
     patch = body.model_dump(exclude_none=True)
     updated = set_position_manager_config(patch)
     add_system_log("INFO", "POS_MGR", f"Updated Smart Position Manager config: {updated}")
+    asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
     return position_manager.get_status()
 
 
@@ -958,7 +999,45 @@ async def get_discord_config_endpoint() -> dict[str, Any]:
 async def put_discord_config_endpoint(body: DiscordConfigRequest) -> dict[str, Any]:
     updated = set_discord_config(body.model_dump(exclude_none=True))
     add_system_log("INFO", "DISCORD", f"Updated Discord notification config (enabled={updated.get('enabled')})")
+    asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
+    asyncio.create_task(
+        asyncio.to_thread(
+            sync_bridge_state_to_supabase,
+            updated.get("public_base_url"),
+            mt5_service.is_connected(),
+        )
+    )
     return updated
+
+
+@app.get("/api/supabase/status")
+async def get_supabase_status() -> dict[str, Any]:
+    return {
+        "configured": is_supabase_configured(),
+        "supabase_url": SUPABASE_URL,
+        "owner_email": SUPABASE_OWNER_EMAIL,
+    }
+
+
+@app.post("/api/supabase/sync-all", dependencies=[Depends(verify_api_key)])
+async def post_supabase_sync_all() -> dict[str, Any]:
+    connected = await asyncio.to_thread(mt5_service.is_connected)
+    acc = None
+    bal = None
+    t_mode = None
+    if connected:
+        try:
+            acc = await asyncio.to_thread(mt5_service.get_account_summary)
+            bal = acc.get("balance")
+            t_mode = acc.get("trade_mode")
+        except Exception:
+            pass
+    try:
+        res = await asyncio.to_thread(sync_all_to_supabase, bal, connected, t_mode, acc)
+        add_system_log("INFO", "SUPABASE", f"Full sync to Supabase completed: {res.get('written')}")
+        return res
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/discord/test", dependencies=[Depends(verify_api_key)])

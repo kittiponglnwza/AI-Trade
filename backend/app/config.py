@@ -40,3 +40,21 @@ DB_PATH: Path = DATA_DIR / "trade_journal.db"
 GOOGLE_SHEETS_WEBHOOK_URL: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "").strip()
 GOOGLE_SERVICE_ACCOUNT_FILE: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
 GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", "").strip()
+
+SUPABASE_URL: str = os.getenv(
+    "SUPABASE_URL",
+    "https://igdrxqpxbfvaeagppnus.supabase.co",
+).strip().rstrip("/")
+SUPABASE_PUBLISHABLE_KEY: str = os.getenv(
+    "SUPABASE_PUBLISHABLE_KEY",
+    "sb_publishable__Bc0V-v4EV0VJ0hZ_aV-9w_rd3uvyK1",
+).strip()
+SUPABASE_OWNER_ID: str = os.getenv(
+    "SUPABASE_OWNER_ID",
+    "20c1e655-72e7-4f18-ad5e-16b54794fee5",
+).strip()
+SUPABASE_OWNER_EMAIL: str = os.getenv(
+    "SUPABASE_OWNER_EMAIL",
+    "kitipongzaza566@gmail.com",
+).strip()
+SUPABASE_OWNER_PASSWORD: str = os.getenv("SUPABASE_OWNER_PASSWORD", "").strip()

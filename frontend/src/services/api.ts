@@ -23,6 +23,7 @@ import type {
   WatchlistQuote,
   WatchlistScannerItem,
 } from "../types/trading";
+import { getValidSupabaseAccessToken } from "./supabase";
 
 const STORAGE_URL_KEY = "mt5_bridge_url";
 const STORAGE_API_KEY = "mt5_api_key";
@@ -86,8 +87,14 @@ async function requestJson<T>(path: string, init: RequestInit = {}, includeApiKe
   if (!headers.has("Content-Type") && init.body) {
     headers.set("Content-Type", "application/json");
   }
-  if (includeApiKey && apiKey) {
-    headers.set("X-API-Key", apiKey);
+  if (includeApiKey) {
+    const sbToken = await getValidSupabaseAccessToken();
+    if (sbToken) {
+      headers.set("Authorization", `Bearer ${sbToken}`);
+    }
+    if (apiKey) {
+      headers.set("X-API-Key", apiKey);
+    }
   }
 
   const res = await fetch(url, { ...init, headers });
@@ -485,4 +492,22 @@ export function testDiscordWebhook(cfg?: Partial<DiscordConfig>) {
     },
     true
   );
+}
+
+export function fetchSupabaseStatus() {
+  return requestJson<{
+    configured: boolean;
+    supabase_url: string;
+    owner_email: string;
+  }>("/api/supabase/status");
+}
+
+export function syncAllSupabase() {
+  return requestJson<{
+    ok: boolean;
+    supabase_url: string;
+    owner_email: string;
+    bridge_state_synced: boolean;
+    written: Record<string, number>;
+  }>("/api/supabase/sync-all", { method: "POST" }, true);
 }
