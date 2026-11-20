@@ -15,6 +15,8 @@ interface PositionsTableProps {
   positions: OpenPosition[];
   orders: PendingOrder[];
   tradeHistory?: TradeLogEntry[];
+  bridgeLive?: boolean;
+  reconnectSeed?: number;
   onOpenFullJournal?: () => void;
   onUpdated: () => void;
 }
@@ -23,6 +25,8 @@ export function PositionsTable({
   positions,
   orders,
   tradeHistory = [],
+  bridgeLive = true,
+  reconnectSeed = 0,
   onOpenFullJournal,
   onUpdated,
 }: PositionsTableProps) {
@@ -64,19 +68,35 @@ export function PositionsTable({
   const [pollSecInput, setPollSecInput] = useState("5");
 
   useEffect(() => {
-    fetchPositionManagerStatus()
-      .then((res) => {
-        setPmCfg(res.config);
-        setBeTriggerInput(String(res.config.be_trigger_r ?? 1.0));
-        setBeOffsetInput(String(res.config.be_offset_points ?? 5));
-        setPartialTriggerInput(String(res.config.partial_trigger_r ?? 1.5));
-        setPartialPctInput(String(res.config.partial_close_pct ?? 50));
-        setTrailStartInput(String(res.config.trail_start_r ?? 1.5));
-        setTrailDistInput(String(res.config.trail_distance_r ?? 0.8));
-        setPollSecInput(String(res.config.poll_interval_sec ?? 5));
-      })
-      .catch(() => {});
-  }, []);
+    let active = true;
+    let retryTimer: number | undefined;
+
+    const loadPm = () => {
+      fetchPositionManagerStatus()
+        .then((res) => {
+          if (!active) return;
+          setPmCfg(res.config);
+          setBeTriggerInput(String(res.config.be_trigger_r ?? 1.0));
+          setBeOffsetInput(String(res.config.be_offset_points ?? 5));
+          setPartialTriggerInput(String(res.config.partial_trigger_r ?? 1.5));
+          setPartialPctInput(String(res.config.partial_close_pct ?? 50));
+          setTrailStartInput(String(res.config.trail_start_r ?? 1.5));
+          setTrailDistInput(String(res.config.trail_distance_r ?? 0.8));
+          setPollSecInput(String(res.config.poll_interval_sec ?? 5));
+        })
+        .catch(() => {
+          if (active && bridgeLive) {
+            retryTimer = window.setTimeout(loadPm, 3000);
+          }
+        });
+    };
+
+    loadPm();
+    return () => {
+      active = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [bridgeLive, reconnectSeed]);
 
   const handleTogglePmFlag = async (patch: Partial<PositionManagerConfig>, msg?: string) => {
     setBusy(true);

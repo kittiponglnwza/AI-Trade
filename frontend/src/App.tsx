@@ -505,6 +505,8 @@ export default function App() {
                   positions={positions}
                   orders={orders}
                   tradeHistory={logs}
+                  bridgeLive={wsStatus === "LIVE"}
+                  reconnectSeed={reconnectSeed}
                   onOpenFullJournal={() => setActiveTab("journal")}
                   onUpdated={refreshAllSideData}
                 />
