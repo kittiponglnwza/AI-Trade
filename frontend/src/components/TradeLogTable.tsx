@@ -13,7 +13,10 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sideFilter, setSideFilter] = useState("ALL");
   const [search, setSearch] = useState("");
+  const [syncDays, setSyncDays] = useState(365);
   const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [syncErr, setSyncErr] = useState<string | null>(null);
 
   const [editing, setEditing] = useState<TradeLogEntry | null>(null);
   const [tagInput, setTagInput] = useState("");
@@ -21,11 +24,12 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
   const [saving, setSaving] = useState(false);
 
   const filtered = logs.filter((item) => {
+    const sideStr = String(item.side || "");
     if (statusFilter !== "ALL" && item.status !== statusFilter) return false;
-    if (sideFilter !== "ALL" && !item.side.startsWith(sideFilter)) return false;
+    if (sideFilter !== "ALL" && !sideStr.startsWith(sideFilter)) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      const hay = `${item.symbol} ${item.strategy_tag} ${item.notes} ${item.source}`.toLowerCase();
+      const hay = `${item.symbol || ""} ${item.strategy_tag || ""} ${item.notes || ""} ${item.source || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -33,9 +37,14 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncMsg(null);
+    setSyncErr(null);
     try {
-      await syncLogs(90);
+      const res = await syncLogs(syncDays);
+      setSyncMsg(`ซิงก์ประวัติ MT5 (${syncDays} วัน) สำเร็จ: พบ ${res.total} ไม้ปิด (ใหม่ ${res.inserted}, อัปเดต ${res.updated})`);
       onRefresh();
+    } catch (err) {
+      setSyncErr(err instanceof Error ? err.message : "ซิงก์ประวัติจาก MT5 ไม่สำเร็จ (เช็คว่าเปิดคอมและ MT5 แล้ว)");
     } finally {
       setSyncing(false);
     }
@@ -72,6 +81,17 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={syncDays}
+              onChange={(e) => setSyncDays(Number(e.target.value))}
+              className="rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-xs text-[#cccccc]"
+              title="ช่วงเวลาย้อนหลังที่จะดึงจาก MT5"
+            >
+              <option value={30}>30 วัน</option>
+              <option value={90}>90 วัน</option>
+              <option value={365}>1 ปี</option>
+              <option value={3650}>ทั้งหมด</option>
+            </select>
             <button
               type="button"
               onClick={handleSync}
@@ -92,6 +112,17 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
             </a>
           </div>
         </div>
+
+        {syncMsg && (
+          <div className="mt-2.5 rounded border border-[#3fb950]/40 bg-[#1e3a29]/40 px-3 py-2 text-xs text-[#3fb950]">
+            {syncMsg}
+          </div>
+        )}
+        {syncErr && (
+          <div className="mt-2.5 rounded border border-[#f14c4c]/40 bg-[#5a1d1d]/40 px-3 py-2 text-xs text-[#f48771]">
+            {syncErr}
+          </div>
+        )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="relative min-w-[200px] flex-1">
@@ -147,7 +178,11 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
                   </td>
                 </tr>
               ) : (
-                filtered.map((row) => (
+                filtered.map((row) => {
+                  const sideStr = String(row.side || "");
+                  const volNum = Number(row.volume ?? 0);
+                  const netNum = Number(row.net_profit ?? 0);
+                  return (
                   <tr key={row.id} className="hover:bg-[#2a2d2e]">
                     <td className="py-2 pr-3 text-[#9d9d9d]">
                       {row.close_time || row.open_time || row.created_at}
@@ -156,27 +191,27 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
                       <span className="font-semibold text-[#e1e1e1]">{row.symbol}</span>{" "}
                       <span
                         className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                          row.side.startsWith("BUY")
+                          sideStr.startsWith("BUY")
                             ? "bg-[#3fb950]/15 text-[#3fb950]"
                             : "bg-[#f14c4c]/15 text-[#f14c4c]"
                         }`}
                       >
-                        {row.side}
+                        {sideStr}
                       </span>
                     </td>
-                    <td className="py-2 pr-3 text-[#cccccc]">{row.volume.toFixed(2)}</td>
+                    <td className="py-2 pr-3 text-[#cccccc]">{volNum.toFixed(2)}</td>
                     <td className="py-2 pr-3 text-[#cccccc]">{row.entry_price}</td>
                     <td className="py-2 pr-3 text-[#cccccc]">{row.exit_price ?? "—"}</td>
                     <td
                       className={`py-2 pr-3 text-right font-bold ${
-                        row.net_profit > 0
+                        netNum > 0
                           ? "text-[#3fb950]"
-                          : row.net_profit < 0
+                          : netNum < 0
                           ? "text-[#f14c4c]"
                           : "text-[#cccccc]"
                       }`}
                     >
-                      {row.net_profit >= 0 ? "+" : ""}${row.net_profit.toFixed(2)}
+                      {netNum >= 0 ? "+" : ""}${netNum.toFixed(2)}
                     </td>
                     <td className="py-2 pr-3">
                       <span
@@ -208,7 +243,8 @@ export function TradeLogTable({ logs, auditEvents, onRefresh }: TradeLogTablePro
                       </button>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

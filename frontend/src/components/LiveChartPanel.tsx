@@ -20,6 +20,8 @@ interface LiveChartPanelProps {
   symbol: string;
   timeframe: Timeframe;
   onTimeframeChange: (tf: Timeframe) => void;
+  barsLimit?: number;
+  onBarsLimitChange?: (bars: number) => void;
   candles: CandlePoint[];
   lastBar: CandlePoint | null;
   mtf: MtfSummaryRow[];
@@ -28,11 +30,14 @@ interface LiveChartPanelProps {
 }
 
 const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+const BAR_LIMIT_OPTIONS = [250, 500, 1000, 2000];
 
 export function LiveChartPanel({
   symbol,
   timeframe,
   onTimeframeChange,
+  barsLimit = 500,
+  onBarsLimitChange,
   candles,
   lastBar,
   mtf,
@@ -211,7 +216,7 @@ export function LiveChartPanel({
       );
     }
 
-    const chartKey = `${symbol}:${timeframe}`;
+    const chartKey = `${symbol}:${timeframe}:${barsLimit}`;
     if (prevChartKeyRef.current !== chartKey) {
       prevChartKeyRef.current = chartKey;
       const total = candles.length;
@@ -221,7 +226,7 @@ export function LiveChartPanel({
         to: total + 8,
       });
     }
-  }, [candles, symbol, timeframe]);
+  }, [candles, symbol, timeframe, barsLimit]);
 
   useEffect(() => {
     ema20SeriesRef.current?.applyOptions({ visible: showEma20 });
@@ -384,6 +389,20 @@ export function LiveChartPanel({
               {tf}
             </button>
           ))}
+          {onBarsLimitChange && (
+            <select
+              value={barsLimit}
+              onChange={(e) => onBarsLimitChange(Number(e.target.value))}
+              className="font-mono-num ml-1 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-xs text-[#cccccc] focus:border-[#007fd4] focus:outline-none"
+              title="จำนวนแท่งเทียนย้อนหลังที่โหลดมาแสดงบนกราฟ"
+            >
+              {BAR_LIMIT_OPTIONS.map((b) => (
+                <option key={b} value={b}>
+                  {b} แท่ง
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">

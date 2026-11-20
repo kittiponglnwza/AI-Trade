@@ -157,30 +157,47 @@ def notify_discord_proposal(proposal: dict[str, Any]) -> bool:
         return False
 
 
-def notify_discord_autopilot(proposal: dict[str, Any], exec_res: dict[str, Any]) -> bool:
-    """Send Discord alert when Auto-Pilot automatically executes a high-conviction DEMO trade."""
+def notify_discord_autopilot(
+    proposal: dict[str, Any],
+    exec_res: dict[str, Any],
+    mode_label: str = "AUTOPILOT",
+) -> bool:
+    """Send Discord alert when Auto-Accept or Auto-Pilot automatically executes an AI trade."""
     cfg = get_discord_config()
     if not cfg.get("enabled") or not cfg.get("notify_autopilot", True) or not cfg.get("webhook_url"):
         return False
     try:
         gauntlet = proposal.get("gauntlet") or {}
         conf_pct = gauntlet.get("confidence_pct")
-        conf_str = f"{float(conf_pct):.1f}%" if conf_pct is not None else "≥80%"
-        embed = {
-            "title": f"🤖 [AUTO-PILOT DEMO ยิงออเดอร์แล้ว] {proposal['side']} {exec_res.get('exec_volume', proposal['lots'])} {proposal['symbol']}",
-            "description": (
+        conf_str = f"{float(conf_pct):.1f}%" if conf_pct is not None else "PASS"
+        is_auto_accept = mode_label.upper() == "AUTO_ACCEPT"
+        title = (
+            f"⚡ [AUTO-ACCEPT AI ยอมรับออเดอร์อัตโนมัติแล้ว] {proposal['side']} {exec_res.get('exec_volume', proposal['lots'])} {proposal['symbol']}"
+            if is_auto_accept
+            else f"🤖 [AUTO-PILOT DEMO ยิงออเดอร์แล้ว] {proposal['side']} {exec_res.get('exec_volume', proposal['lots'])} {proposal['symbol']}"
+        )
+        desc = (
+            f"โหมด **Auto-Accept AI** ยอมรับและยิงไม้ที่ AI แจ้งเข้า MT5 ให้อัตโนมัติ (ความมั่นใจ **{conf_str}**)\n"
+            f"Ticket: `#{exec_res.get('order_ticket')}` · ราคาเข้าจริง: `{exec_res.get('exec_price')}`\n"
+            f"*(สามารถกดปิดโหมด Auto-Accept ได้ทุกเมื่อที่หน้าเว็บ)*"
+            if is_auto_accept
+            else (
                 f"โหมด **Auto-Pilot Demo** ยิงไม้เข้า MT5 อัตโนมัติเพราะความมั่นใจ **{conf_str}** ผ่านครบ 9 ด่าน\n"
                 f"Ticket: `#{exec_res.get('order_ticket')}` · ราคาเข้าจริง: `{exec_res.get('exec_price')}`"
-            ),
-            "color": 0x007ACC,
+            )
+        )
+        embed = {
+            "title": title,
+            "description": desc,
+            "color": 0x3FB950 if is_auto_accept else 0x007ACC,
             "fields": [
                 {"name": "Symbol / TF", "value": f"`{proposal['symbol']}` (`{proposal.get('timeframe', 'M15')}`)", "inline": True},
                 {"name": "SL / TP", "value": f"SL: `{proposal.get('sl')}` | TP: `{proposal.get('tp')}`", "inline": True},
                 {"name": "ML + News Conf", "value": f"**{conf_str}**", "inline": True},
             ],
-            "footer": {"text": f"MT5 AI Auto-Pilot (DEMO) · Proposal #{proposal['id']}"},
+            "footer": {"text": f"MT5 AI {'Auto-Accept' if is_auto_accept else 'Auto-Pilot'} · Proposal #{proposal['id']}"},
         }
-        send_discord_webhook({"username": "MT5 AI Auto-Pilot", "embeds": [embed]})
+        send_discord_webhook({"username": "MT5 AI Auto-Accept" if is_auto_accept else "MT5 AI Auto-Pilot", "embeds": [embed]})
         return True
     except Exception as exc:
         add_system_log("WARN", "DISCORD", f"Discord autopilot notify warning: {exc}", symbol=str(proposal.get("symbol", "")))

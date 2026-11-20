@@ -56,13 +56,23 @@ export function StatsDashboard({ stats, onRefresh }: StatsDashboardProps) {
     });
 
     let prevTs = 0;
-    const seriesData = stats.equity_curve.map((pt) => {
-      const parsed = Date.parse(pt.time.replace(" ", "T") + "Z");
+    const rawPoints = stats.equity_curve.map((pt) => {
+      const parsed = Date.parse(String(pt.time || "").replace(" ", "T") + "Z");
       let ts = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : prevTs + 60;
       if (ts <= prevTs) ts = prevTs + 1;
       prevTs = ts;
-      return { time: ts as UTCTimestamp, value: pt.equity };
+      return { time: ts as UTCTimestamp, value: Number(pt.equity ?? 0) };
     });
+    const seriesData =
+      rawPoints.length > 0 && Number.isFinite(Number(stats.starting_balance))
+        ? [
+            {
+              time: (Math.max(1, Number(rawPoints[0].time) - 60) as UTCTimestamp),
+              value: Number(stats.starting_balance),
+            },
+            ...rawPoints,
+          ]
+        : rawPoints;
 
     area.setData(seriesData);
     chart.timeScale().fitContent();

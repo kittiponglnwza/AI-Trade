@@ -10,17 +10,28 @@ import {
   ShieldCheck,
   Sparkles,
   X,
+  Zap,
 } from "lucide-react";
 import { confirmProposal, rejectProposal } from "../services/api";
-import type { AccountSummary, TradeProposal } from "../types/trading";
+import type { AccountSummary, TradeProposal, WatchdogConfig } from "../types/trading";
 
 interface ProposalsQueueProps {
   proposals: TradeProposal[];
   account: AccountSummary | null;
+  watchdogConfig?: WatchdogConfig | null;
+  autoAcceptBusy?: boolean;
+  onToggleAutoAccept?: (nextEnabled: boolean) => void;
   onUpdated: () => void;
 }
 
-export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueueProps) {
+export function ProposalsQueue({
+  proposals,
+  account,
+  watchdogConfig,
+  autoAcceptBusy = false,
+  onToggleAutoAccept,
+  onUpdated,
+}: ProposalsQueueProps) {
   const [confirmTarget, setConfirmTarget] = useState<TradeProposal | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -28,6 +39,12 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
 
   const pending = proposals.filter((p) => p.status === "PENDING");
   const recent = proposals.filter((p) => p.status !== "PENDING").slice(0, 5);
+  const autoAcceptOn = Boolean(watchdogConfig?.auto_accept_proposals);
+  const sizingLabel =
+    watchdogConfig?.autopilot_sizing_mode === "RISK_PCT"
+      ? `Risk ${watchdogConfig?.autopilot_risk_pct ?? 1}%`
+      : `${watchdogConfig?.autopilot_fixed_lots ?? 0.01} Lot`;
+  const maxOpenLabel = watchdogConfig?.autopilot_max_open_positions ?? 3;
 
   const handleConfirm = async () => {
     if (!confirmTarget) return;
@@ -67,10 +84,65 @@ export function ProposalsQueue({ proposals, account, onUpdated }: ProposalsQueue
             AI Confirmation Queue ({pending.length})
           </h2>
         </div>
-        <span className="text-[11px] text-[#9d9d9d]">กดยืนยันเพื่อยิงเข้า MT5</span>
+        <span className="text-[11px] text-[#9d9d9d]">
+          {autoAcceptOn ? "โหมดยอมรับอัตโนมัติทำงานอยู่" : "กดยืนยันเพื่อยิงเข้า MT5"}
+        </span>
       </div>
 
-      {account && !account.terminal_trade_allowed && pending.length > 0 && (
+      {onToggleAutoAccept && (
+        <div
+          className={`flex items-center justify-between gap-2.5 rounded border p-2.5 transition ${
+            autoAcceptOn
+              ? "border-[#3fb950]/50 bg-[#3fb950]/10"
+              : "border-[#3c3c3c] bg-[#1e1e1e]"
+          }`}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-xs font-semibold">
+              <Zap className={`h-3.5 w-3.5 shrink-0 ${autoAcceptOn ? "text-[#3fb950]" : "text-[#9d9d9d]"}`} />
+              <span className={autoAcceptOn ? "text-[#3fb950]" : "text-[#e1e1e1]"}>
+                ยอมรับ Auto เมื่อ AI แจ้งมา
+              </span>
+              <span
+                className={`rounded px-1.5 py-0.2 text-[10px] font-bold ${
+                  autoAcceptOn
+                    ? "bg-[#3fb950]/20 text-[#3fb950]"
+                    : "bg-[#313131] text-[#9d9d9d]"
+                }`}
+              >
+                {autoAcceptOn ? "ON" : "OFF"}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11px] leading-snug text-[#9d9d9d]">
+              {autoAcceptOn
+                ? `ยิงเข้า MT5 ทันทีที่ AI ส่งสัญญาณ (${sizingLabel} · สูงสุด ${maxOpenLabel} ไม้ · กดปิดได้ตลอด)`
+                : "ปิดอยู่ — AI จะส่งเข้าคิวและแจ้ง Discord เพื่อรอคุณกดยืนยันเอง"}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoAcceptOn}
+            disabled={autoAcceptBusy}
+            onClick={() => onToggleAutoAccept(!autoAcceptOn)}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition focus:outline-none disabled:opacity-50 ${
+              autoAcceptOn
+                ? "border-[#3fb950] bg-[#238636]"
+                : "border-[#555555] bg-[#313131]"
+            }`}
+            title={autoAcceptOn ? "คลิกเพื่อปิดโหมดยอมรับอัตโนมัติ" : "คลิกเพื่อเปิดโหมดยอมรับอัตโนมัติ"}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+                autoAcceptOn ? "translate-x-5" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+      )}
+
+      {account && !account.terminal_trade_allowed && (pending.length > 0 || autoAcceptOn) && (
         <div className="flex items-start gap-2 rounded border border-[#cca700]/50 bg-[#cca700]/10 p-2.5 text-xs text-[#dcdcaa] break-words">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#dcdcaa]" />
           <span>

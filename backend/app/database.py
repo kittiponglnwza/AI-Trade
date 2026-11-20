@@ -39,6 +39,7 @@ DEFAULT_WATCHDOG_CONFIG: dict[str, Any] = {
     "risk_pct": 2.0,
     "min_confidence_pct": 75.0,
     "auto_propose": True,
+    "auto_accept_proposals": False,
     "cooldown_min": 30,
     "autopilot_enabled": False,
     "autopilot_min_confidence_pct": 80.0,

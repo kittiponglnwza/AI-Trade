@@ -141,7 +141,7 @@ export function fetchSnapshot(symbol = "XAUUSD") {
   return requestJson<MarketSnapshot>(`/api/market/snapshot?symbol=${encodeURIComponent(symbol)}`);
 }
 
-export function fetchCandles(symbol = "XAUUSD", tf: Timeframe = "M15", bars = 250) {
+export function fetchCandles(symbol = "XAUUSD", tf: Timeframe = "M15", bars = 500) {
   return requestJson<CandlesResponse>(
     `/api/candles?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=${bars}`
   );
@@ -245,11 +245,19 @@ export function panicCloseAll(allowReal = false) {
   );
 }
 
-export function fetchLogs(params?: { status?: string; side?: string; search?: string }) {
+export function fetchLogs(params?: {
+  status?: string;
+  side?: string;
+  search?: string;
+  sync?: boolean;
+  days?: number;
+}) {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.side) sp.set("side", params.side);
   if (params?.search) sp.set("search", params.search);
+  if (params?.sync) sp.set("sync", "true");
+  if (params?.days) sp.set("days", String(params.days));
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return requestJson<{ logs: TradeLogEntry[]; count: number; audit_events: AuditEvent[] }>(`/api/logs${qs}`);
 }

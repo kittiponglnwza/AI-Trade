@@ -25,6 +25,7 @@ import {
   fetchWatchlist,
   getBridgeConfig,
   saveBridgeConfig,
+  updateWatchdogConfig,
 } from "./services/api";
 import {
   discoverBridgeStateFromSupabase,
@@ -59,9 +60,11 @@ export default function App() {
   );
   const [symbol, setSymbol] = useState("XAUUSD");
   const [timeframe, setTimeframe] = useState<Timeframe>("M15");
+  const [chartBars, setChartBars] = useState<number>(500);
   const [activeTab, setActiveTab] = useState<AppTab>("desk");
   const [rightTab, setRightTab] = useState<"proposals" | "planner">("proposals");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [autoAcceptBusy, setAutoAcceptBusy] = useState(false);
 
   const [wsStatus, setWsStatus] = useState<WsStatus>("OFFLINE");
   const [mt5Connected, setMt5Connected] = useState(false);
@@ -90,24 +93,28 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const retryDelayRef = useRef<number>(1000);
   const lastPendingCountRef = useRef<number | null>(null);
+  const lastPositionsCountRef = useRef<number | null>(null);
   const lastLogIdRef = useRef<number | null>(null);
+  const wsWasOfflineRef = useRef<boolean>(false);
   const activeSymbolRef = useRef<string>(symbol);
   const activeTimeframeRef = useRef<Timeframe>(timeframe);
+  const activeBarsRef = useRef<number>(chartBars);
 
   useEffect(() => {
     activeSymbolRef.current = symbol;
     activeTimeframeRef.current = timeframe;
-  }, [symbol, timeframe]);
+    activeBarsRef.current = chartBars;
+  }, [symbol, timeframe, chartBars]);
 
-  const loadRestData = useCallback(async (sym: string, tf: Timeframe) => {
+  const loadRestData = useCallback(async (sym: string, tf: Timeframe, bars = 500, syncHistory = false) => {
     try {
       const [snap, candleRes, propRes, logRes, statRes, wlRes, wdRes, sysLogRes] =
         await Promise.allSettled([
           fetchSnapshot(sym),
-          fetchCandles(sym, tf, 250),
+          fetchCandles(sym, tf, bars),
           fetchProposals(),
-          fetchLogs(),
-          fetchStats(false),
+          fetchLogs({ sync: syncHistory }),
+          fetchStats(syncHistory),
           fetchWatchlist(),
           fetchWatchdogStatus(),
           fetchSystemLogs({ limit: 120 }),
@@ -200,13 +207,47 @@ export default function App() {
   }, []);
 
   const refreshAllSideData = useCallback(async () => {
-    await loadRestData(symbol, timeframe);
-  }, [loadRestData, symbol, timeframe]);
+    await loadRestData(symbol, timeframe, chartBars, activeTab === "journal" || activeTab === "stats");
+  }, [loadRestData, symbol, timeframe, chartBars, activeTab]);
+
+  const handleToggleAutoAccept = useCallback(
+    async (nextEnabled: boolean) => {
+      setAutoAcceptBusy(true);
+      try {
+        const res = await updateWatchdogConfig({ auto_accept_proposals: nextEnabled });
+        setWatchdogStatus(res);
+        setWatchdogRunning(res.running && Boolean(res.config?.enabled ?? true));
+        window.setTimeout(() => {
+          loadRestData(activeSymbolRef.current, activeTimeframeRef.current, activeBarsRef.current, false);
+        }, 800);
+      } catch (err) {
+        setBridgeError(err instanceof Error ? err.message : "เปลี่ยนโหมด Auto-Accept ไม่สำเร็จ");
+      } finally {
+        setAutoAcceptBusy(false);
+      }
+    },
+    [loadRestData]
+  );
 
   useEffect(() => {
     if (!authSession) return;
-    loadRestData(symbol, timeframe);
-  }, [authSession, loadRestData, symbol, timeframe, reconnectSeed]);
+    loadRestData(symbol, timeframe, chartBars, false);
+  }, [authSession, loadRestData, symbol, timeframe, chartBars, reconnectSeed]);
+
+  useEffect(() => {
+    if (!authSession) return;
+    if (activeTab === "journal" || activeTab === "stats") {
+      fetchLogs({ sync: true })
+        .then((res) => {
+          setLogs(res.logs);
+          setAuditEvents(res.audit_events);
+        })
+        .catch(() => {});
+      fetchStats(true)
+        .then((st) => setStats(st))
+        .catch(() => {});
+    }
+  }, [authSession, activeTab]);
 
   useEffect(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -231,6 +272,10 @@ export default function App() {
         retryDelayRef.current = 1000;
         setWsStatus("LIVE");
         setBridgeError(null);
+        if (wsWasOfflineRef.current) {
+          wsWasOfflineRef.current = false;
+          loadRestData(activeSymbolRef.current, activeTimeframeRef.current, activeBarsRef.current, true);
+        }
         ws.send(
           JSON.stringify({
             action: "subscribe",
@@ -275,11 +320,32 @@ export default function App() {
 
           if (pkt.type === "tick" && pkt.mt5_connected) {
             if (pkt.account) setAccount(pkt.account);
-            if (pkt.symbol && pkt.symbol.toUpperCase() === activeSymbolRef.current.toUpperCase()) {
+            const activeU = activeSymbolRef.current.toUpperCase();
+            const pktSymU = (pkt.symbol || "").toUpperCase();
+            const pktQuoteSymU = (pkt.quote?.symbol || "").toUpperCase();
+            if (!pktSymU || pktSymU === activeU || pktQuoteSymU === activeU) {
               if (pkt.quote) setQuote(pkt.quote);
               if (pkt.last_bar) setLastBar(pkt.last_bar);
             }
-            if (pkt.positions) setPositions(pkt.positions);
+            if (pkt.positions) {
+              setPositions(pkt.positions);
+              const nextPosCount = pkt.positions.length;
+              if (lastPositionsCountRef.current !== null && nextPosCount !== lastPositionsCountRef.current) {
+                fetchLogs({ sync: true })
+                  .then((res) => {
+                    setLogs(res.logs);
+                    setAuditEvents(res.audit_events);
+                  })
+                  .catch(() => {});
+                fetchStats(false)
+                  .then((st) => setStats(st))
+                  .catch(() => {});
+                fetchProposals()
+                  .then((res) => setProposals(res.proposals))
+                  .catch(() => {});
+              }
+              lastPositionsCountRef.current = nextPosCount;
+            }
             if (pkt.orders) setOrders(pkt.orders);
           }
         } catch {
@@ -294,6 +360,7 @@ export default function App() {
       ws.onclose = () => {
         wsRef.current = null;
         if (closedByEffect) return;
+        wsWasOfflineRef.current = true;
         setWsStatus("OFFLINE");
         discoverBridgeStateFromSupabase()
           .then((st) => {
@@ -324,7 +391,7 @@ export default function App() {
         wsRef.current = null;
       }
     };
-  }, [authSession, reconnectSeed]);
+  }, [authSession, reconnectSeed, loadRestData]);
 
   if (!authSession) {
     return (
@@ -338,6 +405,7 @@ export default function App() {
   }
 
   const pendingProposalsCount = proposals.filter((p) => p.status === "PENDING").length;
+  const autoAcceptEnabled = Boolean(watchdogStatus?.config?.auto_accept_proposals);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#181818] text-[#cccccc]">
@@ -345,6 +413,9 @@ export default function App() {
         wsStatus={wsStatus}
         mt5Connected={mt5Connected}
         watchdogRunning={watchdogRunning}
+        autoAcceptEnabled={autoAcceptEnabled}
+        autoAcceptBusy={autoAcceptBusy}
+        onToggleAutoAccept={handleToggleAutoAccept}
         account={account}
         quote={quote}
         activeTab={activeTab}
@@ -426,6 +497,8 @@ export default function App() {
                   symbol={quote?.symbol ?? symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
+                  barsLimit={chartBars}
+                  onBarsLimitChange={setChartBars}
                   candles={candles}
                   lastBar={lastBar}
                   mtf={mtf}
@@ -435,6 +508,8 @@ export default function App() {
                 <PositionsTable
                   positions={positions}
                   orders={orders}
+                  tradeHistory={logs}
+                  onOpenFullJournal={() => setActiveTab("journal")}
                   onUpdated={refreshAllSideData}
                 />
               </div>
@@ -480,6 +555,9 @@ export default function App() {
                       <ProposalsQueue
                         proposals={proposals}
                         account={account}
+                        watchdogConfig={watchdogStatus?.config}
+                        autoAcceptBusy={autoAcceptBusy}
+                        onToggleAutoAccept={handleToggleAutoAccept}
                         onUpdated={refreshAllSideData}
                       />
                     ) : (

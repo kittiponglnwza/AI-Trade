@@ -84,6 +84,7 @@ class WatchdogConfigPatchRequest(BaseModel):
     risk_pct: float | None = Field(default=None, gt=0, le=50)
     min_confidence_pct: float | None = Field(default=None, ge=50.0, le=95.0)
     auto_propose: bool | None = None
+    auto_accept_proposals: bool | None = None
     cooldown_min: int | None = Field(default=None, ge=1, le=1440)
     autopilot_enabled: bool | None = None
     autopilot_min_confidence_pct: float | None = Field(default=None, ge=55.0, le=95.0)

@@ -1,23 +1,33 @@
 import { useEffect, useState } from "react";
-import { AlertOctagon, Edit3, Save, ShieldCheck, Sliders, Trash2, X } from "lucide-react";
+import { AlertOctagon, Edit3, History, RefreshCw, Save, ShieldCheck, Sliders, Trash2, X } from "lucide-react";
 import {
   closePosition,
   fetchPositionManagerStatus,
   modifyPosition,
   movePositionToBreakeven,
   panicCloseAll,
+  syncLogs,
   updatePositionManagerConfig,
 } from "../services/api";
-import type { OpenPosition, PendingOrder, PositionManagerConfig } from "../types/trading";
+import type { OpenPosition, PendingOrder, PositionManagerConfig, TradeLogEntry } from "../types/trading";
 
 interface PositionsTableProps {
   positions: OpenPosition[];
   orders: PendingOrder[];
+  tradeHistory?: TradeLogEntry[];
+  onOpenFullJournal?: () => void;
   onUpdated: () => void;
 }
 
-export function PositionsTable({ positions, orders, onUpdated }: PositionsTableProps) {
-  const [subTab, setSubTab] = useState<"positions" | "orders">("positions");
+export function PositionsTable({
+  positions,
+  orders,
+  tradeHistory = [],
+  onOpenFullJournal,
+  onUpdated,
+}: PositionsTableProps) {
+  const [subTab, setSubTab] = useState<"positions" | "orders" | "history">("positions");
+  const [syncingHistory, setSyncingHistory] = useState(false);
   const [showPmTuning, setShowPmTuning] = useState(false);
   const [editTarget, setEditTarget] = useState<{
     ticket: number;
@@ -209,10 +219,27 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
     setCloseLotsInput(raw.toFixed(2));
   };
 
+  const handleSyncHistory = async () => {
+    setSyncingHistory(true);
+    setErrMsg(null);
+    setInfoMsg(null);
+    try {
+      const res = await syncLogs(365);
+      setInfoMsg(`ซิงก์ประวัติ MT5 แล้ว ${res.total} ไม้ (ใหม่ ${res.inserted}, อัปเดต ${res.updated})`);
+      onUpdated();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "ซิงก์ประวัติ MT5 ไม่สำเร็จ");
+    } finally {
+      setSyncingHistory(false);
+    }
+  };
+
+  const closedHistory = tradeHistory.filter((t) => t.status === "CLOSED");
+
   return (
     <div className="rounded-md border border-[#2b2b2b] bg-[#252526]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#2b2b2b] px-3 py-1.5">
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <button
             type="button"
             onClick={() => setSubTab("positions")}
@@ -234,6 +261,18 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
             }`}
           >
             Pending Orders ({orders.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab("history")}
+            className={`flex items-center gap-1 border-b-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+              subTab === "history"
+                ? "border-[#007acc] text-[#e1e1e1]"
+                : "border-transparent text-[#9d9d9d] hover:text-[#cccccc]"
+            }`}
+          >
+            <History className="h-3.5 w-3.5" />
+            History ({tradeHistory.length})
           </button>
         </div>
 
@@ -436,6 +475,106 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
       )}
 
       <div className="overflow-x-auto bg-[#1e1e1e] p-3">
+        {subTab === "history" ? (
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-[#9d9d9d]">
+                ประวัติเทรดล่าสุด ({tradeHistory.length} รายการ · ปิดแล้ว {closedHistory.length} ไม้)
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={syncingHistory}
+                  onClick={handleSyncHistory}
+                  className="flex items-center gap-1 rounded border border-[#3c3c3c] bg-[#313131] px-2.5 py-1 text-[11px] font-medium text-[#e1e1e1] hover:bg-[#3c3c3c] disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${syncingHistory ? "animate-spin" : ""}`} />
+                  {syncingHistory ? "กำลังซิงก์..." : "Sync MT5 History"}
+                </button>
+                {onOpenFullJournal && (
+                  <button
+                    type="button"
+                    onClick={onOpenFullJournal}
+                    className="rounded bg-[#007acc] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#1f8ad2]"
+                  >
+                    ดูประวัติทั้งหมด →
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <table className="font-mono-num w-full min-w-[680px] text-left text-xs">
+              <thead>
+                <tr className="border-b border-[#2b2b2b] text-[11px] uppercase tracking-wider text-[#9d9d9d]">
+                  <th className="py-2 pr-3">Time</th>
+                  <th className="py-2 pr-3">Symbol / Side</th>
+                  <th className="py-2 pr-3">Lots</th>
+                  <th className="py-2 pr-3">Entry → Exit</th>
+                  <th className="py-2 pr-3">Status</th>
+                  <th className="py-2 pr-3">Source</th>
+                  <th className="py-2 text-right">Net P/L</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#2b2b2b]">
+                {tradeHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-6 text-center text-[#6e6e6e]">
+                      ยังไม่มีประวัติเทรดในบัญชีนี้ — กด &ldquo;Sync MT5 History&rdquo; เพื่อดึงข้อมูลล่าสุดจาก MT5
+                    </td>
+                  </tr>
+                ) : (
+                  tradeHistory.slice(0, 15).map((row) => {
+                    const vol = Number(row.volume ?? 0);
+                    const net = Number(row.net_profit ?? 0);
+                    const sideStr = String(row.side || "");
+                    return (
+                      <tr key={`hist-${row.id}`} className="hover:bg-[#2a2d2e]">
+                        <td className="py-2 pr-3 text-[#9d9d9d]">
+                          {row.close_time || row.open_time || row.created_at}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <span className="font-semibold text-[#e1e1e1]">{row.symbol}</span>{" "}
+                          <span
+                            className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              sideStr.startsWith("BUY")
+                                ? "bg-[#3fb950]/15 text-[#3fb950]"
+                                : "bg-[#f14c4c]/15 text-[#f14c4c]"
+                            }`}
+                          >
+                            {sideStr}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 text-[#cccccc]">{vol.toFixed(2)}</td>
+                        <td className="py-2 pr-3 text-[#cccccc]">
+                          {row.entry_price} → {row.exit_price ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              row.status === "CLOSED"
+                                ? "bg-[#313131] text-[#cccccc]"
+                                : "bg-[#007acc]/20 text-[#4fc1ff]"
+                            }`}
+                          >
+                            {row.status}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 text-[#9d9d9d]">{row.source || "MT5"}</td>
+                        <td
+                          className={`py-2 text-right font-bold ${
+                            net > 0 ? "text-[#3fb950]" : net < 0 ? "text-[#f14c4c]" : "text-[#cccccc]"
+                          }`}
+                        >
+                          {net >= 0 ? "+" : ""}${net.toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <table className="font-mono-num w-full min-w-[680px] text-left text-xs">
           <thead>
             <tr className="border-b border-[#2b2b2b] text-[11px] uppercase tracking-wider text-[#9d9d9d]">
@@ -616,6 +755,7 @@ export function PositionsTable({ positions, orders, onUpdated }: PositionsTableP
               ))}
           </tbody>
         </table>
+        )}
       </div>
 
       {editTarget && (

@@ -16,6 +16,10 @@ TERMINAL_PATH: str = os.getenv(
     "MT5_TERMINAL_PATH",
     r"C:\Program Files\MetaTrader 5\terminal64.exe",
 )
+_raw_mt5_login = os.getenv("MT5_LOGIN", "").strip()
+MT5_LOGIN: int | None = int(_raw_mt5_login) if _raw_mt5_login.isdigit() else None
+MT5_PASSWORD: str = os.getenv("MT5_PASSWORD", "").strip()
+MT5_SERVER: str = os.getenv("MT5_SERVER", "").strip()
 DEFAULT_SYMBOL: str = os.getenv("MT5_DEFAULT_SYMBOL", "XAUUSD")
 API_KEY: str = os.getenv("MT5_API_KEY", "mt5-local-dev-key")
 ALLOW_REAL_TRADING: bool = os.getenv("ALLOW_REAL_TRADING", "false").strip().lower() in {

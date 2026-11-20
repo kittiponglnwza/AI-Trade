@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, ChevronDown, ChevronUp, Play, Power, Save, Sliders, Terminal } from "lucide-react";
+import { Activity, Bot, ChevronDown, ChevronUp, Play, Power, Save, Sliders, Terminal, Zap } from "lucide-react";
 import { triggerWatchdogScan, updateWatchdogConfig } from "../services/api";
 import type { SystemLogEntry, WatchdogStatus } from "../types/trading";
 
@@ -185,6 +185,23 @@ export function WatchdogConsole({
                 />
                 <span className="text-[#4fc1ff]">%</span>
               </div>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  handlePatch({ auto_accept_proposals: !cfg.auto_accept_proposals })
+                }
+                className={`flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-semibold ${
+                  cfg.auto_accept_proposals
+                    ? "border-[#3fb950]/50 bg-[#3fb950]/15 text-[#3fb950]"
+                    : "border-[#3c3c3c] bg-[#313131] text-[#9d9d9d]"
+                }`}
+                title="ยอมรับและยิงเข้า MT5 อัตโนมัติทันทีที่ AI แจ้งเตือน (เปิด-ปิดได้ตลอด)"
+              >
+                <Zap className="h-3 w-3" />
+                Auto-Accept AI: {cfg.auto_accept_proposals ? "ON" : "OFF"}
+              </button>
 
               <button
                 type="button"

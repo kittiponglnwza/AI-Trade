@@ -202,7 +202,7 @@ def compute_trading_stats(
         src = str(trade.get("source") or "").upper()
         tag = str(trade.get("strategy_tag") or "").upper()
         notes = str(trade.get("notes") or "").upper()
-        if src == "AUTOPILOT" or "AUTOPILOT" in tag or "AUTOPILOT" in notes:
+        if src in ("AUTOPILOT", "AUTO_ACCEPT") or "AUTOPILOT" in tag or "AUTOPILOT" in notes or "AUTO_ACCEPT" in tag or "AUTO-ACCEPT" in notes:
             actor_key = "AUTOPILOT"
         elif src in ("WATCHDOG", "GAUNTLET") or "WATCHDOG" in notes or "GAUNTLET" in notes:
             actor_key = "AI_CONFIRMED"

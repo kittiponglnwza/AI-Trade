@@ -512,6 +512,7 @@ export interface WatchdogConfig {
   risk_pct: number;
   min_confidence_pct: number;
   auto_propose: boolean;
+  auto_accept_proposals?: boolean;
   cooldown_min: number;
   autopilot_enabled?: boolean;
   autopilot_min_confidence_pct?: number;

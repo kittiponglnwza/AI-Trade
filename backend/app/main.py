@@ -85,6 +85,7 @@ from app.supabase_sync import (
     sync_all_to_supabase,
     sync_bridge_state_to_supabase,
     sync_settings_to_supabase,
+    sync_trades_to_supabase,
     verify_supabase_owner_jwt,
 )
 from app.watcher import watchdog
@@ -112,7 +113,7 @@ async def _initial_supabase_boot_sync() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     try:
-        mt5_service.connect()
+        await asyncio.to_thread(mt5_service.connect, True)
     except Exception:
         pass
     watchdog.start()
@@ -221,7 +222,7 @@ async def get_risk_status_endpoint() -> dict[str, Any]:
 async def get_candles(
     symbol: str = Query(default=DEFAULT_SYMBOL),
     tf: str = Query(default="M15"),
-    bars: int = Query(default=250, ge=30, le=1000),
+    bars: int = Query(default=500, ge=30, le=3000),
 ) -> dict[str, Any]:
     try:
         return await asyncio.to_thread(mt5_service.get_candles, symbol, tf, bars)
@@ -308,8 +309,19 @@ async def post_create_proposal(body: ProposalCreateRequest) -> dict[str, Any]:
         symbol=proposal["symbol"],
     )
     asyncio.create_task(asyncio.to_thread(sync_proposal_row, proposal))
+    ai_sources = {"AI", "WATCHDOG", "GAUNTLET", "CLI"}
+    wd_cfg = get_watchdog_config()
+    if body.source.upper() in ai_sources and wd_cfg.get("auto_accept_proposals", False):
+        auto_res = await watchdog.auto_accept_proposal(proposal, mode_label="AUTO_ACCEPT")
+        return {
+            "proposal": auto_res.get("proposal") or proposal,
+            "order_check": checked,
+            "auto_accepted": bool(auto_res.get("executed")),
+            "execution": auto_res.get("execution"),
+        }
+
     asyncio.create_task(asyncio.to_thread(notify_discord_proposal, proposal))
-    return {"proposal": proposal, "order_check": checked}
+    return {"proposal": proposal, "order_check": checked, "auto_accepted": False}
 
 
 @app.post("/api/proposals/{proposal_id}/confirm", dependencies=[Depends(verify_api_key)])
@@ -555,15 +567,15 @@ async def patch_modify_position(ticket: int, body: PositionModifyRequest) -> dic
 
 @app.post("/api/positions/panic-close-all", dependencies=[Depends(verify_api_key)])
 async def post_panic_close_all(allow_real: bool = Query(default=False)) -> dict[str, Any]:
-    """Emergency 1-Click Kill-Switch: pause Auto-Pilot, close all open positions, and cancel all pending orders."""
+    """Emergency 1-Click Kill-Switch: pause Auto-Pilot & Auto-Accept, close all open positions, and cancel all pending orders."""
     try:
-        set_watchdog_config({"autopilot_enabled": False})
+        set_watchdog_config({"autopilot_enabled": False, "auto_accept_proposals": False})
         res = await asyncio.to_thread(mt5_service.panic_close_all, allow_real)
         deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, 30)
         sync_summary = upsert_mt5_deals(deals)
         msg = (
             f"🚨 PANIC KILL-SWITCH: ปิดออเดอร์ {res['closed_positions_count']} ไม้, "
-            f"ยกเลิก Pending {res['cancelled_orders_count']} รายการ และปิดโหมด Auto-Pilot แล้ว"
+            f"ยกเลิก Pending {res['cancelled_orders_count']} รายการ และปิดโหมด Auto-Accept / Auto-Pilot แล้ว"
         )
         log_audit(
             event_type="PANIC_CLOSE_ALL",
@@ -632,7 +644,18 @@ async def get_logs(
     side: str | None = Query(default=None),
     search: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
+    sync: bool = Query(default=False),
+    days: int = Query(default=90, ge=1, le=3650),
 ) -> dict[str, Any]:
+    if sync and await asyncio.to_thread(mt5_service.is_connected):
+        try:
+            deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, days)
+            sync_summary = upsert_mt5_deals(deals)
+            newly_closed = sync_summary.get("newly_closed_rows") or []
+            if newly_closed:
+                asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
+        except Exception:
+            pass
     logs = list_trade_logs(status=status, side=side, search=search, limit=limit)
     audit = list_audit_events(limit=40)
     return {"logs": logs, "count": len(logs), "audit_events": audit}
@@ -660,6 +683,15 @@ async def post_sync_logs(days: int = Query(default=90, ge=1, le=3650)) -> dict[s
     newly_closed = summary.get("newly_closed_rows") or []
     if newly_closed:
         asyncio.create_task(asyncio.to_thread(sync_trade_rows, newly_closed))
+    all_trades = list_trade_logs(limit=1000)
+    asyncio.create_task(asyncio.to_thread(sync_trades_to_supabase, all_trades))
+    try:
+        acc = await asyncio.to_thread(mt5_service.get_account_summary)
+        closed = [t for t in all_trades if t.get("status") == "CLOSED"]
+        st = compute_trading_stats(closed, current_balance=acc.get("balance"))
+        asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase, st))
+    except Exception:
+        pass
     return summary
 
 
@@ -690,7 +722,7 @@ async def get_export_logs_csv() -> Response:
 @app.get("/api/stats")
 async def get_stats(sync: bool = Query(default=False)) -> dict[str, Any]:
     current_balance: float | None = None
-    if mt5_service.is_connected():
+    if await asyncio.to_thread(mt5_service.is_connected):
         try:
             if sync:
                 deals = await asyncio.to_thread(mt5_service.fetch_closed_deals, 90)
@@ -820,7 +852,12 @@ async def post_gauntlet_evaluate(
             payload={"proposal_id": queued_proposal["id"]},
         )
         asyncio.create_task(asyncio.to_thread(sync_proposal_row, queued_proposal))
-        asyncio.create_task(asyncio.to_thread(notify_discord_proposal, queued_proposal))
+        wd_cfg = get_watchdog_config()
+        if wd_cfg.get("auto_accept_proposals", False):
+            auto_res = await watchdog.auto_accept_proposal(queued_proposal, mode_label="AUTO_ACCEPT")
+            queued_proposal = auto_res.get("proposal") or queued_proposal
+        else:
+            asyncio.create_task(asyncio.to_thread(notify_discord_proposal, queued_proposal))
 
     return {**result, "queued_proposal": queued_proposal}
 
@@ -890,6 +927,8 @@ async def patch_watchdog_config(body: WatchdogConfigPatchRequest) -> dict[str, A
     updated = set_watchdog_config(patch)
     add_system_log("INFO", "WATCHDOG", f"Updated watchdog config: {updated}")
     asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
+    if patch.get("auto_accept_proposals") is True:
+        asyncio.create_task(watchdog.process_pending_auto_accept())
     return watchdog.get_status()
 
 
@@ -1000,11 +1039,12 @@ async def put_discord_config_endpoint(body: DiscordConfigRequest) -> dict[str, A
     updated = set_discord_config(body.model_dump(exclude_none=True))
     add_system_log("INFO", "DISCORD", f"Updated Discord notification config (enabled={updated.get('enabled')})")
     asyncio.create_task(asyncio.to_thread(sync_settings_to_supabase))
+    connected_now = await asyncio.to_thread(mt5_service.is_connected)
     asyncio.create_task(
         asyncio.to_thread(
             sync_bridge_state_to_supabase,
             updated.get("public_base_url"),
-            mt5_service.is_connected(),
+            connected_now,
         )
     )
     return updated
@@ -1206,7 +1246,8 @@ def _build_ws_packet(symbol: str, tf: str) -> dict[str, Any]:
         "type": "tick",
         "mt5_connected": True,
         "server_time": now_str,
-        "symbol": resolved,
+        "symbol": symbol.upper(),
+        "resolved_symbol": resolved,
         "tf": tf.upper(),
         "pending_proposals_count": pending_count,
         "latest_log_id": latest_log_id,

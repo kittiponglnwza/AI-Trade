@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
+import os
+from pathlib import Path
 import re
+import subprocess
 import threading
 import time
 from typing import Any
@@ -13,7 +16,14 @@ from typing import Any
 import MetaTrader5 as mt5
 import pandas as pd
 
-from app.config import ALLOW_REAL_TRADING, DEFAULT_SYMBOL, TERMINAL_PATH
+from app.config import (
+    ALLOW_REAL_TRADING,
+    DEFAULT_SYMBOL,
+    MT5_LOGIN,
+    MT5_PASSWORD,
+    MT5_SERVER,
+    TERMINAL_PATH,
+)
 from app.indicators import MTF_ORDER, TIMEFRAME_MAP, classify_trend, compute_indicators, safe_float
 
 TRADE_MODE_MAP = {
@@ -46,18 +56,64 @@ class MT5BridgeService:
         self.terminal_path = terminal_path
         self._lock = threading.RLock()
         self._connected = False
+        self._active_login: int | None = None
+        self._last_connect_fail_mono: float = 0.0
         self._resolved_symbols: dict[str, str] = {}
 
-    def connect(self) -> bool:
+    def _sync_active_account(self, acc: Any) -> None:
+        login = int(acc.login)
+        if self._active_login != login:
+            self._active_login = login
+            self._resolved_symbols.clear()
+
+    def _is_terminal_running(self) -> bool:
+        """Check whether terminal64.exe is already running so we never secretly spawn a hidden MT5 window."""
+        exe_name = Path(self.terminal_path).name or "terminal64.exe"
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            out = subprocess.check_output(
+                ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/NH"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                creationflags=creationflags,
+            )
+            return exe_name.lower() in out.lower()
+        except Exception:
+            return True
+
+    def connect(self, force: bool = False) -> bool:
         """Attempt to initialize MT5 connection and verify an active logged-in account."""
         with self._lock:
-            ok = mt5.initialize(path=self.terminal_path)
-            if not ok:
-                ok = mt5.initialize()
-            if not ok or mt5.account_info() is None:
+            now = time.monotonic()
+            if not force and self._last_connect_fail_mono > 0 and (now - self._last_connect_fail_mono) < 5.0:
+                return False
+
+            if not self._is_terminal_running():
                 self._connected = False
+                self._last_connect_fail_mono = time.monotonic()
+                return False
+
+            init_kwargs: dict[str, Any] = {"path": self.terminal_path, "timeout": 8000}
+            if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
+                init_kwargs["login"] = MT5_LOGIN
+                init_kwargs["password"] = MT5_PASSWORD
+                init_kwargs["server"] = MT5_SERVER
+
+            ok = mt5.initialize(**init_kwargs)
+            if not ok and MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
+                ok = mt5.initialize(path=self.terminal_path, timeout=5000)
+                if ok and mt5.account_info() is None:
+                    mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER, timeout=8000)
+
+            acc = mt5.account_info() if ok else None
+            if not ok or acc is None:
+                self._connected = False
+                self._last_connect_fail_mono = time.monotonic()
                 return False
             self._connected = True
+            self._last_connect_fail_mono = 0.0
+            self._sync_active_account(acc)
             return True
 
     def disconnect(self) -> None:
@@ -65,27 +121,51 @@ class MT5BridgeService:
         with self._lock:
             mt5.shutdown()
             self._connected = False
+            self._active_login = None
             self._resolved_symbols.clear()
 
     def ensure_connected(self) -> None:
         """Ensure MT5 is connected, attempting automatic reconnect if needed."""
         with self._lock:
-            if self._connected and mt5.account_info() is not None:
-                return
+            if self._connected:
+                acc = mt5.account_info()
+                if acc is not None:
+                    self._sync_active_account(acc)
+                    return
             if not self.connect():
                 raise RuntimeError(
                     f"MetaTrader 5 is not connected or no account is logged in: {mt5.last_error()}"
                 )
 
+    def _broker_link_ok(self) -> bool:
+        """True only if the terminal is actually connected to the broker server (not just IPC-attached)."""
+        term = mt5.terminal_info()
+        if term is not None and bool(term.connected):
+            return True
+        now = time.monotonic()
+        if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER and (now - self._last_connect_fail_mono) >= 10.0:
+            relogged = mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER, timeout=8000)
+            if not relogged:
+                self._last_connect_fail_mono = time.monotonic()
+            term = mt5.terminal_info()
+            return term is not None and bool(term.connected)
+        return False
+
     def is_connected(self) -> bool:
-        """Non-throwing connection status check."""
+        """Non-throwing connection status check (IPC attached AND broker link alive)."""
         with self._lock:
             if not self._connected:
-                return self.connect()
+                if not self.connect():
+                    return False
             acc = mt5.account_info()
             if acc is None:
-                return self.connect()
-            return True
+                if not self.connect():
+                    return False
+                acc = mt5.account_info()
+                if acc is None:
+                    return False
+            self._sync_active_account(acc)
+            return self._broker_link_ok()
 
     def _wait_for_tick(self, symbol: str, timeout: float = 0.6) -> Any:
         info = mt5.symbol_info(symbol)
@@ -112,7 +192,11 @@ class MT5BridgeService:
             cached = self._resolved_symbols.get(pref_clean.upper())
             if cached:
                 info = mt5.symbol_info(cached)
-                if info is not None and mt5.symbol_select(cached, True):
+                if (
+                    info is not None
+                    and info.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL
+                    and mt5.symbol_select(cached, True)
+                ):
                     tick = mt5.symbol_info_tick(cached)
                     if tick is not None and tick.bid > 0 and tick.ask > 0:
                         return cached
@@ -131,29 +215,43 @@ class MT5BridgeService:
             pref_upper = pref_clean.upper()
             patterns = [
                 re.compile(rf"^{re.escape(pref_upper)}$"),
+                re.compile(rf"^{re.escape(pref_upper)}[#M]$"),
+                re.compile(rf"^{re.escape(pref_upper)}CASH[#M]?$"),
                 re.compile(rf"^{re.escape(pref_upper)}.*"),
                 re.compile(rf".*{re.escape(pref_upper)}.*"),
             ]
-            if pref_upper == "XAUUSD":
-                patterns.extend(
-                    [
-                        re.compile(r"^XAUUSD.*"),
-                        re.compile(r".*XAUUSD.*"),
-                        re.compile(r"^GOLD.*"),
-                        re.compile(r".*XAU.*USD.*"),
-                    ]
-                )
+            alias_patterns: dict[str, list[str]] = {
+                "XAUUSD": [r"^XAUUSD[#M]?$", r"^GOLD[#M]?$", r"^XAUUSD.*", r".*XAUUSD.*", r"^GOLD.*", r".*XAU.*USD.*"],
+                "XAGUSD": [r"^XAGUSD[#M]?$", r"^SILVER[#M]?$", r"^SILVER.*"],
+                "USTEC": [r"^US100CASH[#M]?$", r"^NAS100[#M]?$", r"^US100.*", r"^NDX.*"],
+                "US500": [r"^US500CASH[#M]?$", r"^SPX500.*", r"^US500.*"],
+                "US30": [r"^US30CASH[#M]?$", r"^WS30.*", r"^US30.*"],
+                "NVDA": [r"^NVIDIA[#M]?$"],
+                "AAPL": [r"^APPLE[#M]?$"],
+                "TSLA": [r"^TESLA[#M]?$"],
+                "MSFT": [r"^MICROSOFT[#M]?$"],
+            }
+            for pat_str in alias_patterns.get(pref_upper, []):
+                patterns.append(re.compile(pat_str))
+
+            desc_ticker_pat = re.compile(rf"\({re.escape(pref_upper)}(?:\.[A-Z]+)?\)")
 
             candidates: list[tuple[int, str, Any]] = []
             seen: set[str] = set()
             for sym in symbols:
                 sym_upper = sym.name.upper()
+                matched = False
                 for rank, pat in enumerate(patterns):
                     if pat.match(sym_upper):
                         if sym.name not in seen:
                             seen.add(sym.name)
                             candidates.append((rank, sym.name, sym))
+                        matched = True
                         break
+                if not matched and desc_ticker_pat.search((sym.description or "").upper()):
+                    if sym.name not in seen:
+                        seen.add(sym.name)
+                        candidates.append((len(patterns), sym.name, sym))
 
             if not candidates:
                 raise ValueError(f"No symbol matching '{preferred}' found in MT5.")
@@ -1206,7 +1304,8 @@ class MT5BridgeService:
 
                     out.append(
                         {
-                            "symbol": resolved,
+                            "symbol": raw_sym.upper(),
+                            "resolved_symbol": resolved,
                             "description": quote["description"],
                             "category": quote["category"],
                             "bid": quote["bid"],
